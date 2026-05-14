@@ -773,18 +773,19 @@ function Install-VapourSynth {
     } else {
         $url = $asset.Url
     }
-
     $instPath = Find-Or-Download -FileName "Install-Portable-VapourSynth-$vsTag.ps1" -Url $url
     $inst = (Get-Item $instPath).FullName
     Unblock-File $inst -ErrorAction SilentlyContinue
-    
+
+    $vsDirAbs = Join-Path $base "vapoursynth-portable"
     Info "Ejecutando instalador de VapourSynth (1-3 min)..."
+    Push-Location $base
     try {
-        powershell -ExecutionPolicy Bypass -File $inst -Unattended -TargetFolder "vapoursynth-portable" -PythonVersionMajor 3 -PythonVersionMinor 13
+        powershell -ExecutionPolicy Bypass -NoProfile -File $inst -Unattended -TargetFolder "$vsDirAbs" -PythonVersionMajor 3 -PythonVersionMinor 13
     } catch {
         Warn "Reintentando modo interactivo..."
-        powershell -ExecutionPolicy Bypass -File $inst
-    }
+        powershell -ExecutionPolicy Bypass -NoProfile -File $inst
+    } finally { Pop-Location }
 
     $vspipe = Get-ChildItem $vsDir -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
     if (-not $vspipe) { throw "VapourSynth no se instalo" }
