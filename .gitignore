@@ -1,0 +1,11 @@
+# Artefactos generados (los crea GitHub Actions en la release)
+MPV-Interp-Wizard.bat
+SHA256.txt
+
+# Runtime del wizard (se generan al usarlo en local)
+mpv-interp-wizard.config.json
+mpv-interp-wizard.update-cache.json
+mpv-interp-wizard.log
+
+# Lanzador viejo de desarrollo
+wizard.bat

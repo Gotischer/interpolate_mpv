@@ -1,0 +1,47 @@
+===============================================================================
+  MPV INTERPOLATION WIZARD
+  Instalador de interpolacion de frames para mpv (RIFE / MVTools)
+===============================================================================
+
+QUE HACE
+--------
+Hace que los videos a 24 o 30 fps se vean fluidos en tu monitor de 60, 120
+o 144 Hz, interpolando frames intermedios con IA (RIFE) o con CPU (MVTools).
+
+REQUISITOS
+----------
+- Windows 10 o superior
+- mpv ya instalado en cualquier carpeta
+- ~7 GB libres en disco
+- Para RIFE: GPU NVIDIA RTX 20/30/40/50 con driver reciente
+- Para AMD/Intel/GTX antigua: usa MVTools (CPU) automaticamente
+
+COMO USARLO
+-----------
+1. Doble clic en  wizard.bat
+2. La primera vez te pregunta donde instalar (puedes elegir cualquier
+   carpeta, por defecto al lado de tu mpv).
+3. Elegir "Instalar" en el menu.
+4. Esperar a que descargue e instale (10-30 min segun tu internet).
+5. Abrir un video con mpv. Listo.
+
+SI SMARTSCREEN BLOQUEA EL ARCHIVO
+---------------------------------
+Click en "Mas informacion" -> "Ejecutar de todas formas".
+Es normal: el script no esta firmado con certificado comercial.
+
+PROBLEMAS COMUNES
+-----------------
+- "No se encuentra mpv.exe": escribe la ruta completa cuando te la pida.
+- "Driver muy viejo": actualiza el driver NVIDIA en nvidia.com.
+- Error a medias: corre el wizard otra vez y elige "Reparar".
+- Para empezar de cero: opcion "Desinstalar" y luego "Instalar".
+
+DESINSTALAR
+-----------
+Doble clic en wizard.bat -> opcion "Desinstalar". Borra todo lo instalado
+y deja mpv como estaba.
+
+REPORTAR PROBLEMAS
+------------------
+Adjunta el archivo  mpv-interp-wizard.log  (se crea al lado del wizard).

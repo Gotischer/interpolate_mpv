@@ -1,0 +1,49 @@
+name: Release
+
+# Se dispara al pushear un tag tipo v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # necesario para crear la release
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest   # el build es PowerShell puro, corre rapido aqui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync wizard version with tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"           # ej. v1.2.3
+          $ver = $tag.TrimStart('v')                # ej. 1.2.3
+          $path = "mpv-interp-wizard.ps1"
+          $content = Get-Content $path -Raw
+          $new = $content -replace '(\$Global:WizardVersion\s*=\s*")[^"]+(")', "`${1}$ver`${2}"
+          Set-Content $path -Value $new -NoNewline
+          Write-Host "WizardVersion -> $ver"
+
+      - name: Build single .bat
+        shell: pwsh
+        run: pwsh -ExecutionPolicy Bypass -File ./build-single-bat.ps1
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash MPV-Interp-Wizard.bat -Algorithm SHA256).Hash
+          "$h  MPV-Interp-Wizard.bat" | Set-Content SHA256.txt
+          Write-Host "SHA256: $h"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            MPV-Interp-Wizard.bat
+            LEEME.txt
+            SHA256.txt
