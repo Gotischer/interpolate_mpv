@@ -645,7 +645,7 @@ function Find-Or-Download {
             }
         }
     }
-    $dst = Join-Path $Global:Config.BaseDir $FileName
+    $dst = [System.IO.Path]::GetFullPath((Join-Path $Global:Config.BaseDir $FileName))
     if (Test-Path $dst) {
         if ($ExpectedSize -eq 0 -or (Get-Item $dst).Length -eq $ExpectedSize) {
             Info "Ya descargado: $FileName"
@@ -657,15 +657,15 @@ function Find-Or-Download {
     $aria = Get-Aria2
     if ($aria) {
         Info "Descargando con aria2 (multi-conexion)..."
-        # -x 16 (conexiones por server), -s 16 (partes), -k 1M (tamaño minimo de parte)
-        & $aria -x 16 -s 16 -k 1M --allow-overwrite=true --auto-file-renaming=false --console-log-level=warn -d $Global:Config.BaseDir -o $FileName $Url
+        $dir = Split-Path $dst -Parent
+        $name = Split-Path $dst -Leaf
+        & $aria -x 16 -s 16 -k 1M --allow-overwrite=true --auto-file-renaming=false --console-log-level=warn -d $dir -o $name $Url
         if ($LASTEXITCODE -eq 0 -and (Test-Path $dst)) { return $dst }
         Warn "Aria2 fallo, reintentando con metodo estandar..."
     }
 
     Info "Descargando $FileName (metodo estandar)..."
     try {
-        # BITS es mas rapido que Invoke-WebRequest en archivos grandes
         Import-Module BitsTransfer -EA SilentlyContinue
         Start-BitsTransfer -Source $Url -Destination $dst -DisplayName "Descargando $FileName"
     } catch {
@@ -774,15 +774,17 @@ function Install-VapourSynth {
         $url = $asset.Url
     }
 
-    $inst = Find-Or-Download -FileName "Install-Portable-VapourSynth-$vsTag.ps1" -Url $url
+    $instPath = Find-Or-Download -FileName "Install-Portable-VapourSynth-$vsTag.ps1" -Url $url
+    $inst = (Get-Item $instPath).FullName
+    Unblock-File $inst -ErrorAction SilentlyContinue
+    
     Info "Ejecutando instalador de VapourSynth (1-3 min)..."
-    Push-Location $base
     try {
-        & $inst -Unattended -TargetFolder "vapoursynth-portable" -PythonVersionMajor 3 -PythonVersionMinor 13
+        powershell -ExecutionPolicy Bypass -File $inst -Unattended -TargetFolder "vapoursynth-portable" -PythonVersionMajor 3 -PythonVersionMinor 13
     } catch {
-        Warn "Reintentando sin -Unattended"
-        & $inst
-    } finally { Pop-Location }
+        Warn "Reintentando modo interactivo..."
+        powershell -ExecutionPolicy Bypass -File $inst
+    }
 
     $vspipe = Get-ChildItem $vsDir -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
     if (-not $vspipe) { throw "VapourSynth no se instalo" }
