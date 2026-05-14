@@ -1,7 +1,7 @@
 # MPV Interpolation Wizard
 
 [![Latest release](https://img.shields.io/github/v/release/Gotischer/interpolate_mpv?label=descargar&color=brightgreen)](https://github.com/Gotischer/interpolate_mpv/releases/latest)
-[![License](https://img.shields.io/github/license/Gotischer/interpolate_mpv)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Asistente automatizado para instalar interpolación de frames en [mpv](https://mpv.io)
 usando **VapourSynth + RIFE (TensorRT)** o **MVTools** como respaldo. Convierte
