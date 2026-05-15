@@ -562,7 +562,7 @@ function Detect-Installation {
     }
     $state.SetHzInstalled = Test-Path (Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1")
 
-    $isRife = ($Global:Env.SupportedBackend -eq "RIFE_TRT")
+    $isRife = ($Global:Env.SupportedBackend -match "RIFE_TRT")
     if ($state.VSInstalled) {
         if ($isRife) {
             if ($state.MlrtInstalled -and $state.VsmlrtPyPatched -and $state.ModelsInstalled -and $state.VpyInstalled) {
@@ -971,6 +971,9 @@ function Write-InterpolationVpy {
     param([bool]$IsBlackwell, [bool]$Force = $false)
     Section "interpolation.vpy"
     $dst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
+    $parent = Split-Path $dst -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    
     if ((Test-Path $dst) -and -not $Force) { Info "Ya existe (no se sobreescribe; usa Reparar para regenerar)"; return }
     if (Test-Path $dst) {
         $bak = "$dst.bak"
@@ -1035,7 +1038,7 @@ function Write-AutoModeLua {
     param([bool]$Force = $false)
     Section "auto_mode.lua"
     $scriptsDir = Join-Path $Global:Config.MpvConfigDir "scripts"
-    if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir | Out-Null }
+    if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
     $dst = Join-Path $scriptsDir "auto_mode.lua"
     if ((Test-Path $dst) -and -not $Force) { Info "Ya existe (no se sobreescribe; usa Reparar para regenerar)"; return }
     if (Test-Path $dst) { Copy-Item $dst "$dst.bak" -Force; Info "Backup -> $dst.bak" }
@@ -1117,6 +1120,8 @@ mp.add_key_binding("H",      "toggle-interpolation-alt", toggle_interp)
 function Write-SetDisplayHz {
     Section "set_display_hz.ps1"
     $dst = Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1"
+    $parent = Split-Path $dst -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     if (Test-Path $dst) { Info "Ya existe (no se sobreescribe)"; return }
     $content = @'
 param([double]$Hz, [string]$Device = "\\.\DISPLAY2")
@@ -1546,9 +1551,16 @@ function Action-Repair {
 
     $r = Read-Host "Aplicar reparacion automatica de lo que falte? (s/n)"
     if ($r -ne "s" -and $r -ne "S") { return }
+    
+    # Asegurar que existe la carpeta de config de mpv
+    if (-not (Test-Path $Global:Config.MpvConfigDir)) { 
+        New-Item -ItemType Directory -Path $Global:Config.MpvConfigDir -Force | Out-Null
+        Ok "Creada carpeta: $($Global:Config.MpvConfigDir)"
+    }
+
     if (-not $st.VSInstalled) { $vsp = Install-VapourSynth; $st.VSPath = Split-Path $vsp -Parent }
     
-    if ($Global:Env.SupportedBackend -eq "RIFE_TRT") {
+    if ($Global:Env.SupportedBackend -match "RIFE_TRT") {
         if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
@@ -1557,6 +1569,8 @@ function Action-Repair {
         # Reparar MVTools
         if (-not $st.VpyInstalled) {
             $vpyDst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
+            $parent = Split-Path $vpyDst -Parent
+            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             # Generar el vpy de MVTools (copiando la logica de Action-Install-MVTools)
             $vpyContent = @"
 # vpy-template-version: $($Global:VpyTemplateVersion)
@@ -1601,7 +1615,7 @@ function Action-Diagnose {
     Info "  VapourSynth      : $(if ($st.VSInstalled){$st.VSPath}else{'no instalado'})"
     Info "  mpv compatible   : $(if ($st.MpvSupportsVs){'SI'}else{'NO (Falta soporte VapourSynth en el exe)'})"
     
-    if ($Global:Env.SupportedBackend -eq "RIFE_TRT") {
+    if ($Global:Env.SupportedBackend -match "RIFE_TRT") {
         Info "  vs-mlrt version  : $($st.MlrtVersion)"
         Info "  vsmlrt.py parchado: $($st.VsmlrtPyPatched)"
         Info "  Modelos RIFE     : $($st.ModelsInstalled)"
