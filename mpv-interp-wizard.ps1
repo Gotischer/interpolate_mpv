@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 2      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 3      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 2      # subir cuando cambies el template del auto_mode.lua
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
@@ -437,7 +437,9 @@ function Detect-GPU {
             if ($name -match "rtx\s*50[0-9]{2}|rtx\s*pro\s*6") {
                 $Global:Env.GPUGen           = "Blackwell"
                 $Global:Env.ComputeCap       = "12.0"
-                $Global:Env.SupportedBackend = "RIFE_TRT_RTX"
+                # TRT estandar es estable; TRT_RTX sigue siendo experimental
+                # y rompe el filtro en mpv en muchos setups. Por defecto: TRT.
+                $Global:Env.SupportedBackend = "RIFE_TRT"
             } elseif ($name -match "rtx\s*40[0-9]{2}") {
                 $Global:Env.GPUGen           = "Ada Lovelace"
                 $Global:Env.ComputeCap       = "8.9"
