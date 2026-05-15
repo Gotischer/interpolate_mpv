@@ -945,11 +945,21 @@ function Setup-VsmlrtPy {
 
     $srcPy  = Join-Path $pluginDir "vsmlrt.py"
     $destPy = Join-Path $siteDir "vsmlrt.py"
-    if (-not (Test-Path $srcPy)) { throw "vsmlrt.py no encontrado en $pluginDir" }
 
-    Copy-Item $srcPy $destPy -Force
-    Remove-Item $srcPy -Force -EA SilentlyContinue
-    Ok "vsmlrt.py en $destPy"
+    if (Test-Path $srcPy) {
+        # Recien extraido del bundle: mover de vs-plugins/ a site-packages/
+        Copy-Item $srcPy $destPy -Force
+        Remove-Item $srcPy -Force -EA SilentlyContinue
+        Ok "vsmlrt.py movido a $destPy"
+    } elseif (Test-Path $destPy) {
+        # Ya estaba migrado de una instalacion previa: nada que mover, solo re-parchar
+        Info "vsmlrt.py ya estaba en site-packages, se re-aplican parches"
+    } else {
+        # Ni en vs-plugins ni en site-packages: no hay vs-mlrt instalado
+        Warn "vsmlrt.py no encontrado ni en vs-plugins/ ni en Lib/site-packages/"
+        Hint "Reinstala vs-mlrt: menu Actualizar -> Actualizar bundle vs-mlrt"
+        return
+    }
 
     $n = Patch-Vsmlrt -Path $destPy
     if ($n -gt 0) { Ok "$n parche(s) aplicados" } else { Info "Ya parchado" }
