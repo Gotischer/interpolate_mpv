@@ -968,7 +968,7 @@ function Install-RifeModels {
 }
 
 function Write-InterpolationVpy {
-    param([bool]$IsBlackwell, [bool]$Force = $false)
+    param([bool]$IsBlackwell, [switch]$Force)
     Section "interpolation.vpy"
     $dst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
     $parent = Split-Path $dst -Parent
@@ -1035,7 +1035,7 @@ clip.set_output()
 }
 
 function Write-AutoModeLua {
-    param([bool]$Force = $false, [int]$Buffered = 8, [int]$Concurrent = 4)
+    param([switch]$Force, [int]$Buffered = 8, [int]$Concurrent = 4)
     Section "auto_mode.lua"
     $scriptsDir = Join-Path $Global:Config.MpvConfigDir "scripts"
     if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
@@ -1564,7 +1564,7 @@ function Action-Repair {
         if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
-        if (-not $st.VpyInstalled) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") }
+        if (-not $st.VpyInstalled) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") -Force }
         Write-AutoModeLua -Force -Buffered 8 -Concurrent 4
     } else {
         # Reparar MVTools
