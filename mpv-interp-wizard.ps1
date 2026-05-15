@@ -29,8 +29,8 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 3      # subir cuando cambies el template del .vpy
-$Global:LuaTemplateVersion  = 2      # subir cuando cambies el template del auto_mode.lua
+$Global:VpyTemplateVersion  = 4      # subir cuando cambies el template del .vpy
+$Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
 $Global:VapourSynthRepo     = "vapoursynth/vapoursynth"
@@ -1226,7 +1226,10 @@ clip = video_in
 
 target_fps = display_fps if display_fps and display_fps > 0 else 60.0
 src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
-multi      = max(2, round(target_fps / src_fps))
+# int() = floor: para monitor 60Hz + fuente 24fps da multi=2 (48fps target)
+# en vez de multi=3 (72fps target) que desperdicia 12 frames/seg en pulldown.
+# Para 120Hz/144Hz/240Hz da el multiplicador correcto exacto.
+multi      = max(2, int(target_fps / src_fps))
 
 clip = core.resize.Bicubic(clip, format=vs.RGBH, matrix_in_s="709",
     range_in_s="limited", range_s="full", dither_type="error_diffusion")
@@ -1434,9 +1437,14 @@ function Execute-Full-Install-Steps {
     Setup-VsmlrtPy -VsRoot $script:vsRoot
     Install-RifeModels -VsRoot $script:vsRoot
     Write-InterpolationVpy -BackendType $BackendType
-    # NCNN soporta menos throughput, bajamos buffered/concurrent
-    if ($BackendType -eq "NCNN_VK") { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
-    else                            { Write-AutoModeLua }
+    # buffered/concurrent dependen del backend y de num_streams:
+    # - NCNN: 4/2 (vulkan rinde menos)
+    # - TRT con 1 stream (perfil ultra/rendimiento): 4/2 (frames seriados)
+    # - TRT con 2 streams (perfiles normales): 8/4 (mas throughput)
+    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
+    if ($BackendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    else                               { Write-AutoModeLua -Buffered 8 -Concurrent 4 }
     Write-SetDisplayHz
     Set-EnvVar
 }
@@ -1979,9 +1987,10 @@ function Action-Repair {
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
         if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -BackendType $backendType -Force }
-        # NCNN rinde menos -> buffers mas conservadores
-        $buf = if ($backendType -eq "NCNN_VK") { 4 } else { 8 }
-        $cnc = if ($backendType -eq "NCNN_VK") { 2 } else { 4 }
+        # Buffers segun backend y num_streams (alineado con Execute-Full-Install-Steps)
+        $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
+        if ($backendType -eq "NCNN_VK" -or $streams -le 1) { $buf = 4; $cnc = 2 }
+        else                                                { $buf = 8; $cnc = 4 }
         if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered $buf -Concurrent $cnc }
         else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     } else {
