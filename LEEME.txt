@@ -30,10 +30,37 @@ SI SMARTSCREEN BLOQUEA EL ARCHIVO
 Click en "Mas informacion" -> "Ejecutar de todas formas".
 Es normal: el script no esta firmado con certificado comercial.
 
+RECOMENDADO: AJUSTES EN mpv.conf
+--------------------------------
+Agrega estas tres lineas al archivo mpv.conf (en portable_config/) para
+eliminar el judder cuando la frecuencia de salida de RIFE no encaja en
+el refresh rate del monitor (ej. 72 fps de RIFE en monitor 60 Hz):
+
+    interpolation=yes
+    video-sync=display-resample
+    tscale=oversample
+
+Que hace cada una:
+- interpolation=yes  -> mpv mezcla frames adyacentes con pesos calculados
+                        en cada vsync, produciendo movimiento continuo.
+- video-sync=display-resample -> mpv ajusta el ritmo de reproduccion al
+                                 refresh real del monitor (no al fps
+                                 declarado), eliminando jitter.
+- tscale=oversample  -> algoritmo de blending temporal eficiente; casi
+                        gratis en GPU.
+
+Esto es independiente de RIFE: RIFE inventa frames con IA (caros, calidad
+alta) y la interpolacion de mpv suaviza el timing (barata, sincroniza
+con el monitor). Las dos juntas dan el mejor resultado.
+
+Si no las pones, vas a ver drops y judder visible aunque RIFE este
+funcionando correctamente.
+
 PROBLEMAS COMUNES
 -----------------
 - "No se encuentra mpv.exe": escribe la ruta completa cuando te la pida.
 - "Driver muy viejo": actualiza el driver NVIDIA en nvidia.com.
+- "Mucho drops / judder visible": agrega las 3 lineas de arriba a mpv.conf.
 - Error a medias: corre el wizard otra vez y elige "Reparar".
 - Para empezar de cero: opcion "Desinstalar" y luego "Instalar".
 
