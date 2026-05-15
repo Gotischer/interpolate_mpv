@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
-$Global:WizardVersion       = "1.0.0"
+$Global:WizardVersion       = "1.0.7"
 $Global:VpyTemplateVersion  = 1      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 2      # subir cuando cambies el template del auto_mode.lua
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -171,11 +171,23 @@ function Save-Config {
 function Test-MpvVapourSynth {
     param([string]$MpvExe)
     if (-not $MpvExe -or -not (Test-Path $MpvExe)) { return $false }
+    
+    # Intentar buscar mpv.com al lado de mpv.exe (mejor para capturar salida en terminal)
+    $exeDir = Split-Path $MpvExe -Parent
+    $com = Join-Path $exeDir "mpv.com"
+    $target = if (Test-Path $com) { $com } else { $MpvExe }
+    
     try {
-        # Ejecutamos mpv --vf=help y buscamos 'vapoursynth' en la salida.
-        # Redirigimos stderr a stdout porque mpv suele escribir ahi.
-        $out = & $MpvExe --vf=help 2>&1
-        return ($out -match "vapoursynth")
+        # Ejecutamos mpv --version y buscamos 'vapoursynth' en la lista de features
+        # Usamos -ErrorAction SilentlyContinue para evitar ruidos
+        $out = & $target --version 2>&1
+        $outString = $out | Out-String
+        if ($outString -match "vapoursynth") { return $true }
+        
+        # Segundo intento: mpv --vf=help
+        $out = & $target --vf=help 2>&1
+        $outString = $out | Out-String
+        return ($outString -match "vapoursynth")
     } catch {
         return $false
     }
