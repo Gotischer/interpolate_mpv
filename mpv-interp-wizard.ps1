@@ -31,6 +31,7 @@ $ProgressPreference    = "Continue"
 $Global:WizardVersion       = "1.0.7"
 $Global:VpyTemplateVersion  = 5      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
+$Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
 $Global:VapourSynthRepo     = "vapoursynth/vapoursynth"
@@ -523,6 +524,8 @@ function Detect-Installation {
         LuaVersion        = $null
         LuaOutdated       = $false
         SetHzInstalled    = $false
+        SetHzVersion      = $null
+        SetHzOutdated     = $false
         MpvSupportsVs     = $false
         OverallStatus     = "No instalado"
     }
@@ -587,7 +590,21 @@ function Detect-Installation {
             }
         } catch {}
     }
-    $state.SetHzInstalled = Test-Path (Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1")
+    $setHzPath = Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1"
+    $state.SetHzInstalled = Test-Path $setHzPath
+    if ($state.SetHzInstalled) {
+        try {
+            $first = Get-Content $setHzPath -TotalCount 3 -EA SilentlyContinue
+            $m = $first | Select-String -Pattern 'sethz-template-version:\s*(\d+)' | Select-Object -First 1
+            if ($m) {
+                $state.SetHzVersion = [int]$m.Matches[0].Groups[1].Value
+                $state.SetHzOutdated = ($state.SetHzVersion -lt $Global:SetHzTemplateVersion)
+            } else {
+                $state.SetHzVersion = 1
+                $state.SetHzOutdated = $true
+            }
+        } catch {}
+    }
 
     $isRife = ($Global:Env.SupportedBackend -match "RIFE_TRT")
     if ($state.VSInstalled) {
@@ -1352,13 +1369,25 @@ mp.add_key_binding("H",      "toggle-interpolation-alt", toggle_interp)
 }
 
 function Write-SetDisplayHz {
+    param([switch]$Force)
     Section "set_display_hz.ps1"
     $dst = Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1"
     $parent = Split-Path $dst -Parent
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    if (Test-Path $dst) { Info "Ya existe (no se sobreescribe)"; return }
+    if ((Test-Path $dst) -and -not $Force) { Info "Ya existe (no se sobreescribe; usa Reparar para regenerar)"; return }
+    if (Test-Path $dst) {
+        $bakDir = Join-Path $Global:Config.MpvConfigDir "wizard-backups"
+        if (-not (Test-Path $bakDir)) { New-Item -ItemType Directory -Path $bakDir -Force | Out-Null }
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        Copy-Item $dst (Join-Path $bakDir "set_display_hz.ps1.$stamp.bak") -Force
+        Info "Backup -> wizard-backups/set_display_hz.ps1.$stamp.bak"
+    }
     $content = @'
-param([double]$Hz, [string]$Device = "\\.\DISPLAY2")
+# set_display_hz.ps1 (sethz-template-version: 2)
+# Cambia el refresh rate del monitor primario al Hz indicado.
+# Si pasa -Device explicito, usa ese; sino autodetecta.
+param([double]$Hz, [string]$Device = "")
+
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public class DH {
@@ -1372,11 +1401,37 @@ public class DH {
         public ushort dmLogPixels; public uint dmBitsPerPel,dmPelsWidth,dmPelsHeight,dmDisplayFlags,dmDisplayFrequency;
         public uint dmICMMethod,dmICMIntent,dmMediaType,dmDitherType,dmReserved1,dmReserved2,dmPanningWidth,dmPanningHeight;
     }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+    public struct DISPLAY_DEVICE {
+        public uint cb;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceString;
+        public uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceKey;
+    }
     [DllImport("user32.dll",CharSet=CharSet.Ansi)] public static extern bool EnumDisplaySettings(string d,int n,ref DEVMODE m);
     [DllImport("user32.dll",CharSet=CharSet.Ansi)] public static extern int ChangeDisplaySettingsEx(string d,ref DEVMODE m,IntPtr h,uint f,IntPtr l);
+    [DllImport("user32.dll",CharSet=CharSet.Ansi)] public static extern bool EnumDisplayDevices(string d,uint n,ref DISPLAY_DEVICE info,uint flags);
     public const int ENUM_CURRENT_SETTINGS=-1; public const uint CDS_UPDATEREGISTRY=1;
+    public const uint DISPLAY_DEVICE_PRIMARY_DEVICE = 0x4;
 }
 "@
+
+# Autodetectar monitor primario si no se especifico uno
+if (-not $Device) {
+    $dd = New-Object DH+DISPLAY_DEVICE; $dd.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($dd)
+    $i = 0
+    while ([DH]::EnumDisplayDevices($null, $i, [ref]$dd, 0)) {
+        if (($dd.StateFlags -band [DH]::DISPLAY_DEVICE_PRIMARY_DEVICE) -ne 0) {
+            $Device = $dd.DeviceName
+            break
+        }
+        $i++
+    }
+    if (-not $Device) { $Device = "\\.\DISPLAY1" }   # fallback
+}
+
 $cur = New-Object DH+DEVMODE; $cur.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf($cur)
 [DH]::EnumDisplaySettings($Device,[DH]::ENUM_CURRENT_SETTINGS,[ref]$cur) | Out-Null
 $tgt = [int][Math]::Round($Hz); $best=$null; $m = New-Object DH+DEVMODE; $m.dmSize = $cur.dmSize; $i=0
@@ -2027,7 +2082,8 @@ clip.set_output()
         else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     }
 
-    if (-not $st.SetHzInstalled) { Write-SetDisplayHz }
+    if (-not $st.SetHzInstalled -or $st.SetHzOutdated) { Write-SetDisplayHz -Force }
+    else { Info "set_display_hz.ps1 ya esta al dia (v$($st.SetHzVersion))" }
     Set-EnvVar
     Pause-Continue
 }
@@ -2209,6 +2265,9 @@ function Main {
         }
         if ($st.LuaOutdated -and $st.LuaInstalled) {
             Write-Host "  [!] auto_mode.lua v$($st.LuaVersion) - hay template v$($Global:LuaTemplateVersion) (menu Actualizar)" -ForegroundColor Yellow
+        }
+        if ($st.SetHzOutdated -and $st.SetHzInstalled) {
+            Write-Host "  [!] set_display_hz.ps1 v$($st.SetHzVersion) - hay template v$($Global:SetHzTemplateVersion) (menu Reparar)" -ForegroundColor Yellow
         }
         foreach ($h in $updateHints) {
             Write-Host "  [!] $h" -ForegroundColor Yellow
