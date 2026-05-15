@@ -1041,7 +1041,16 @@ function Write-AutoModeLua {
     if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
     $dst = Join-Path $scriptsDir "auto_mode.lua"
     if ((Test-Path $dst) -and -not $Force) { Info "Ya existe (no se sobreescribe; usa Reparar para regenerar)"; return }
-    if (Test-Path $dst) { Copy-Item $dst "$dst.bak" -Force; Info "Backup -> $dst.bak" }
+    if (Test-Path $dst) {
+        # Guardar respaldo FUERA de scripts/ porque mpv intenta cargar todo lo
+        # que este alli y falla con "Can't load unknown script: auto_mode.lua.bak"
+        $bakDir = Join-Path $Global:Config.MpvConfigDir "wizard-backups"
+        if (-not (Test-Path $bakDir)) { New-Item -ItemType Directory -Path $bakDir | Out-Null }
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $bak = Join-Path $bakDir "auto_mode.lua.$stamp.bak"
+        Copy-Item $dst $bak -Force
+        Info "Backup -> $bak"
+    }
     $verLine = "-- lua-template-version: $($Global:LuaTemplateVersion)"
     $content = @"
 $verLine
@@ -1381,12 +1390,12 @@ clip.set_output()
                 Set-Content $vpyDst $vpyContent -Encoding UTF8
                 Ok "interpolation.vpy (MVTools) regenerado"
             } else {
-                Write-InterpolationVpy -IsBlackwell $isBw -Force $true
+                Write-InterpolationVpy -IsBlackwell $isBw -Force
             }
             Pause-Continue
         }
         4 {
-            Write-AutoModeLua -Force $true
+            Write-AutoModeLua -Force
             Pause-Continue
         }
         5 {
