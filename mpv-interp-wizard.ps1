@@ -1168,18 +1168,37 @@ else { Write-Host "[!!] Error $r"; exit 1 }
 }
 
 function Set-EnvVar {
-    Section "Variable VSSCRIPT_PATH"
+    Section "Variables de entorno"
     $vsRoot = (Get-Variable -Name vsRoot -Scope Script -EA SilentlyContinue).Value
     if (-not $vsRoot) {
         $vspipe = Get-ChildItem (Join-Path $Global:Config.BaseDir "vapoursynth-portable") -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
         if ($vspipe) { $vsRoot = Split-Path $vspipe.FullName -Parent }
     }
-    if (-not $vsRoot) { Warn "No se pudo determinar VSSCRIPT_PATH"; return }
+    if (-not $vsRoot) { Warn "No se pudo determinar la carpeta de VapourSynth"; return }
+
+    # 1) VSSCRIPT_PATH (lo usan VSPipe y herramientas de VS)
     $cur = [Environment]::GetEnvironmentVariable("VSSCRIPT_PATH","User")
-    if ($cur -eq $vsRoot) { Info "Ya configurado"; return }
-    [Environment]::SetEnvironmentVariable("VSSCRIPT_PATH",$vsRoot,"User")
-    Ok "VSSCRIPT_PATH = $vsRoot"
-    Hint "Cierra y vuelve a abrir terminales para que tome efecto"
+    if ($cur -ne $vsRoot) {
+        [Environment]::SetEnvironmentVariable("VSSCRIPT_PATH",$vsRoot,"User")
+        Ok "VSSCRIPT_PATH = $vsRoot"
+    } else { Info "VSSCRIPT_PATH ya configurado" }
+
+    # 2) PATH del usuario - CRITICO: mpv necesita encontrar VSScript.dll para
+    #    que el filtro vapoursynth funcione. Sin esto mpv se cierra al abrir
+    #    un video con interpolacion activada.
+    $userPath = [Environment]::GetEnvironmentVariable("Path","User")
+    if (-not $userPath) { $userPath = "" }
+    $parts = $userPath -split ';' | Where-Object { $_ -and $_.Trim() -ne '' }
+    $already = $parts | Where-Object { $_.TrimEnd('\') -ieq $vsRoot.TrimEnd('\') }
+    if ($already) {
+        Info "PATH del usuario ya contiene $vsRoot"
+    } else {
+        $newPath = (@($vsRoot) + $parts) -join ';'
+        [Environment]::SetEnvironmentVariable("Path",$newPath,"User")
+        Ok "Agregado al PATH del usuario: $vsRoot"
+    }
+
+    Hint "Cierra y vuelve a abrir mpv (y cualquier terminal) para que tome efecto"
 }
 
 # =============================================================================
@@ -1648,6 +1667,7 @@ function Action-Uninstall {
     Info "  - $($Global:Config.BaseDir) (VapourSynth + vs-mlrt + modelos)"
     Info "  - interpolation.vpy, auto_mode.lua, set_display_hz.ps1 de portable_config"
     Info "  - Variable de entorno VSSCRIPT_PATH"
+    Info "  - Entrada de VapourSynth en el PATH del usuario"
     Hint "No se tocan otros archivos de mpv ni tu update.bat"
     Write-Host ""
     $r = Read-Host "Confirmas? (escribe BORRAR)"
@@ -1657,7 +1677,16 @@ function Action-Uninstall {
     Remove-Item (Join-Path $Global:Config.MpvConfigDir "interpolation.vpy") -Force -EA SilentlyContinue
     Remove-Item (Join-Path $Global:Config.MpvConfigDir "scripts\auto_mode.lua") -Force -EA SilentlyContinue
     Remove-Item (Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1") -Force -EA SilentlyContinue
+    # Determinar la carpeta de VapourSynth para quitarla del PATH
+    $vsRoot = [Environment]::GetEnvironmentVariable("VSSCRIPT_PATH","User")
     [Environment]::SetEnvironmentVariable("VSSCRIPT_PATH",$null,"User")
+    if ($vsRoot) {
+        $userPath = [Environment]::GetEnvironmentVariable("Path","User")
+        if ($userPath) {
+            $parts = $userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $vsRoot.TrimEnd('\') }
+            [Environment]::SetEnvironmentVariable("Path",($parts -join ';'),"User")
+        }
+    }
     Ok "Desinstalado"
     Pause-Continue
 }
