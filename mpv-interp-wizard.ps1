@@ -168,6 +168,19 @@ function Save-Config {
     }
 }
 
+function Test-MpvVapourSynth {
+    param([string]$MpvExe)
+    if (-not $MpvExe -or -not (Test-Path $MpvExe)) { return $false }
+    try {
+        # Ejecutamos mpv --vf=help y buscamos 'vapoursynth' en la salida.
+        # Redirigimos stderr a stdout porque mpv suele escribir ahi.
+        $out = & $MpvExe --vf=help 2>&1
+        return ($out -match "vapoursynth")
+    } catch {
+        return $false
+    }
+}
+
 function Auto-Detect-Mpv {
     # 1) PATH
     $w = Get-Command mpv.exe -EA SilentlyContinue
@@ -233,13 +246,23 @@ function Auto-Detect-PortableConfig {
     param([string]$MpvExePath)
     if (-not $MpvExePath) { return $null }
     $dir = Split-Path $MpvExePath -Parent
+    
+    # Prioridad: portable_config al lado del exe
+    $portable = Join-Path $dir "portable_config"
+    if (Test-Path $portable) { return $portable }
+    
+    # Si no existe, pero estamos en una ruta que parece de "Software" o "Portables",
+    # sugerimos crearla alli en vez de ir a AppData.
+    if ($dir -match "Software|Portable|Desktop|Downloads|Games") {
+        return $portable # Devolvemos la ruta aunque no exista para que First-Time-Setup la proponga
+    }
+
     $candidates = @(
-        (Join-Path $dir "portable_config"),
         (Join-Path $dir "config"),
         "$env:APPDATA\mpv"
     )
     foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
-    return $null
+    return "$env:APPDATA\mpv"
 }
 
 function Prompt-Path {
@@ -452,8 +475,12 @@ function Detect-Installation {
         LuaVersion        = $null
         LuaOutdated       = $false
         SetHzInstalled    = $false
+        MpvSupportsVs     = $false
         OverallStatus     = "No instalado"
     }
+    
+    $state.MpvSupportsVs = Test-MpvVapourSynth -MpvExe $Global:Config.MpvExe
+
     $vsDir = Join-Path $Global:Config.BaseDir "vapoursynth-portable"
     if (Test-Path $vsDir) {
         $vspipe = Get-ChildItem $vsDir -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
@@ -529,6 +556,11 @@ function Detect-Installation {
             }
         }
     }
+
+    if (-not $state.MpvSupportsVs -and $Global:Config.MpvExe) {
+        $state.OverallStatus = "ERROR: Tu mpv.exe no soporta VapourSynth"
+    }
+    
     return $state
 }
 
@@ -1150,6 +1182,19 @@ function Action-Install {
     }
     Write-Host ""
 
+    $st = Detect-Installation
+    if (-not $st.MpvSupportsVs) {
+        Bad "TU MPV NO ES COMPATIBLE"
+        Warn "El archivo: $($Global:Config.MpvExe)"
+        Warn "no fue compilado con soporte para VapourSynth."
+        Write-Host ""
+        Write-Host "  Debes descargar una version compatible (ej. de shinchiro o Gresaca)." -ForegroundColor Gray
+        Write-Host "  Link: https://github.com/shinchiro/mpv-winbuild-cmake/releases" -ForegroundColor Cyan
+        Write-Host ""
+        $c = Read-Host "Continuar de todas formas? (s/n)"
+        if ($c -ne "s" -and $c -ne "S") { return }
+    }
+
     if (-not (Test-Path $Global:Config.MpvConfigDir)) { New-Item -ItemType Directory -Path $Global:Config.MpvConfigDir | Out-Null }
     
     Execute-Full-Install-Steps -IsBlackwell $isBlackwell
@@ -1466,7 +1511,15 @@ function Action-Repair {
     Info "  interpolation.vpy: $(if ($st.VpyInstalled){'OK'}else{'FALTA'})"
     Info "  auto_mode.lua    : $(if ($st.LuaInstalled){'OK'}else{'FALTA'})"
     Info "  set_display_hz   : $(if ($st.SetHzInstalled){'OK'}else{'FALTA'})"
+    Info "  mpv + VapourSynth: $(if ($st.MpvSupportsVs){'OK'}else{'INCOMPATIBLE [!]'})"
     Write-Host ""
+
+    if (-not $st.MpvSupportsVs) {
+        Warn "Atencion: Tu reproductor mpv no soporta VapourSynth."
+        Warn "La interpolacion NO funcionara hasta que cambies el mpv.exe."
+        Hint "Descarga uno compatible en: https://github.com/shinchiro/mpv-winbuild-cmake/releases"
+        Write-Host ""
+    }
 
     $r = Read-Host "Aplicar reparacion automatica de lo que falte? (s/n)"
     if ($r -ne "s" -and $r -ne "S") { return }
@@ -1523,6 +1576,7 @@ function Action-Diagnose {
     Info "Instalacion:"
     Info "  Estado           : $($st.OverallStatus)"
     Info "  VapourSynth      : $(if ($st.VSInstalled){$st.VSPath}else{'no instalado'})"
+    Info "  mpv compatible   : $(if ($st.MpvSupportsVs){'SI'}else{'NO (Falta soporte VapourSynth en el exe)'})"
     
     if ($Global:Env.SupportedBackend -eq "RIFE_TRT") {
         Info "  vs-mlrt version  : $($st.MlrtVersion)"
