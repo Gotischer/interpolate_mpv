@@ -512,10 +512,22 @@ function Detect-Installation {
     }
     $state.SetHzInstalled = Test-Path (Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1")
 
-    if ($state.VSInstalled -and $state.MlrtInstalled -and $state.VsmlrtPyPatched -and $state.ModelsInstalled) {
-        $state.OverallStatus = "Instalado y funcional"
-    } elseif ($state.VSInstalled) {
-        $state.OverallStatus = "Instalacion incompleta o corrupta"
+    $isRife = ($Global:Env.SupportedBackend -eq "RIFE_TRT")
+    if ($state.VSInstalled) {
+        if ($isRife) {
+            if ($state.MlrtInstalled -and $state.VsmlrtPyPatched -and $state.ModelsInstalled -and $state.VpyInstalled) {
+                $state.OverallStatus = "Instalado y funcional (RIFE)"
+            } else {
+                $state.OverallStatus = "Instalacion incompleta o corrupta (faltan componentes RIFE)"
+            }
+        } else {
+            # MVTools solo necesita VapourSynth y que el .vpy exista
+            if ($state.VpyInstalled) {
+                $state.OverallStatus = "Instalado y funcional (MVTools)"
+            } else {
+                $state.OverallStatus = "VapourSynth OK (Falta configurar interpolation.vpy)"
+            }
+        }
     }
     return $state
 }
