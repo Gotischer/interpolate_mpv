@@ -803,49 +803,26 @@ function Expand-7z {
 }
 
 function Get-AvailableDisplays {
-    # Devuelve un array de objetos con DeviceName, FriendlyName y IsPrimary.
-    Add-Type -TypeDefinition @"
-using System; using System.Runtime.InteropServices;
-public class DisplayEnum {
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
-    public struct DISPLAY_DEVICE {
-        public uint cb;
-        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string DeviceName;
-        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceString;
-        public uint StateFlags;
-        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceID;
-        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceKey;
+    # Devuelve los displays actualmente activos via System.Windows.Forms.Screen.
+    # Nota: solo lista los que estan ENCENDIDOS y conectados ahora. Si quieres
+    # apuntar a uno inactivo (TV apagado), el menu permite escribir el nombre
+    # del device manualmente (ej. "\\.\DISPLAY2").
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -EA Stop
+    } catch {
+        Warn "No se pudo cargar System.Windows.Forms: $_"
+        return @()
     }
-    [DllImport("user32.dll",CharSet=CharSet.Ansi)] public static extern bool EnumDisplayDevices(string d,uint n,ref DISPLAY_DEVICE info,uint flags);
-    public const uint DISPLAY_DEVICE_PRIMARY_DEVICE = 0x4;
-    public const uint DISPLAY_DEVICE_ACTIVE = 0x1;
-}
-"@ -ErrorAction SilentlyContinue
-
+    $screens = [System.Windows.Forms.Screen]::AllScreens
     $displays = @()
-    $dd = New-Object DisplayEnum+DISPLAY_DEVICE
-    $dd.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($dd)
-    $i = 0
-    while ([DisplayEnum]::EnumDisplayDevices($null, $i, [ref]$dd, 0)) {
-        if (($dd.StateFlags -band [DisplayEnum]::DISPLAY_DEVICE_ACTIVE) -ne 0) {
-            # Pedir el nombre amigable del monitor adjunto
-            $monitor = New-Object DisplayEnum+DISPLAY_DEVICE
-            $monitor.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($monitor)
-            $friendly = $dd.DeviceString
-            if ([DisplayEnum]::EnumDisplayDevices($dd.DeviceName, 0, [ref]$monitor, 0)) {
-                if ($monitor.DeviceString) { $friendly = $monitor.DeviceString }
-            }
-            $displays += [PSCustomObject]@{
-                DeviceName   = $dd.DeviceName
-                FriendlyName = $friendly
-                IsPrimary    = (($dd.StateFlags -band [DisplayEnum]::DISPLAY_DEVICE_PRIMARY_DEVICE) -ne 0)
-            }
+    foreach ($s in $screens) {
+        $displays += [PSCustomObject]@{
+            DeviceName   = $s.DeviceName
+            FriendlyName = "$($s.Bounds.Width)x$($s.Bounds.Height)"
+            IsPrimary    = $s.Primary
         }
-        $i++
-        $dd = New-Object DisplayEnum+DISPLAY_DEVICE
-        $dd.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($dd)
     }
-    return $displays
+    return @($displays)
 }
 
 function Get-MonitorRefreshRate {
@@ -2270,38 +2247,55 @@ function Action-PickDisplayDevice {
     Write-Host "  Este display recibe el cambio automatico de Hz cuando se reproduce" -ForegroundColor Gray
     Write-Host "  un video HDR. Util si tienes un TV ademas del monitor primario." -ForegroundColor Gray
     Write-Host ""
-
-    $displays = Get-AvailableDisplays
-    if ($displays.Count -eq 0) {
-        Warn "No se encontraron displays activos."
-        Pause-Continue
-        return
+    if ($Global:Config.DisplayDevice) {
+        Info "Configuracion actual: $($Global:Config.DisplayDevice)"
+    } else {
+        Info "Configuracion actual: autodetectar primario"
     }
+    Write-Host ""
+
+    $displays = @(Get-AvailableDisplays)
+    Info "Displays activos detectados: $($displays.Count)"
+    Hint "Si tu TV esta apagado, no aparece aqui. Usa 'Escribir manualmente'."
+    Write-Host ""
 
     $options = @()
     $options += "Autodetectar monitor primario"
-    for ($i = 0; $i -lt $displays.Count; $i++) {
-        $d = $displays[$i]
+    foreach ($d in $displays) {
         $tag = if ($d.IsPrimary) { " (primario)" } else { "" }
         $options += ("{0} - {1}{2}" -f $d.DeviceName, $d.FriendlyName, $tag)
     }
+    $options += "Escribir nombre manualmente (ej. \\.\DISPLAY2)"
     $options += "Cancelar"
 
     $sel = Show-Menu -Title "Que display recibe el cambio de Hz?" -Options $options
-    if ($sel -le 0 -or $sel -eq -1) {
-        if ($sel -eq 0) {
-            $Global:Config.DisplayDevice = ""
-            Save-Config | Out-Null
-            Ok "DisplayDevice = (autodetectar primario)"
-        }
-    } elseif ($sel -le $displays.Count) {
+
+    $manualIdx = $displays.Count + 1
+    $cancelIdx = $displays.Count + 2
+
+    if ($sel -eq -1 -or $sel -eq $cancelIdx) {
+        Info "Cancelado"
+        return
+    } elseif ($sel -eq 0) {
+        $Global:Config.DisplayDevice = ""
+        Save-Config | Out-Null
+        Ok "DisplayDevice = (autodetectar primario)"
+    } elseif ($sel -ge 1 -and $sel -le $displays.Count) {
         $chosen = $displays[$sel - 1]
         $Global:Config.DisplayDevice = $chosen.DeviceName
         Save-Config | Out-Null
         Ok "DisplayDevice = $($chosen.DeviceName) ($($chosen.FriendlyName))"
-    } else {
-        Info "Cancelado"
-        return
+    } elseif ($sel -eq $manualIdx) {
+        $v = Read-Host "Nombre del device (ej. \\.\DISPLAY2)"
+        if (-not $v) { Info "Cancelado"; return }
+        if ($v -notmatch '^\\\\\.\\DISPLAY\d+$') {
+            Warn "Formato esperado: \\.\DISPLAYN  (donde N es un numero)"
+            $c = Read-Host "Guardar igual? (s/n)"
+            if ($c -ne "s" -and $c -ne "S") { Info "Cancelado"; return }
+        }
+        $Global:Config.DisplayDevice = $v
+        Save-Config | Out-Null
+        Ok "DisplayDevice = $v"
     }
 
     # Si el script set_display_hz.ps1 ya existe, regenerarlo con el nuevo default
