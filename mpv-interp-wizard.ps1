@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 1      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 2      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 2      # subir cuando cambies el template del auto_mode.lua
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
@@ -401,7 +401,7 @@ $Global:Env = @{
     GPUVendor        = $null    # NVIDIA / AMD / Intel / Unknown
     GPUGen           = $null    # Blackwell / Ada / Ampere / Turing / Pascal / Older
     ComputeCap       = $null    # 12.0 / 8.9 / etc
-    SupportedBackend = $null    # RIFE_TRT_RTX / RIFE_TRT / MVTOOLS
+    SupportedBackend = $null    # RIFE_TRT_RTX / RIFE_TRT / RIFE_NCNN / MVTOOLS
     DriverVersion    = $null
     HasTUI           = $false
 }
@@ -448,19 +448,33 @@ function Detect-GPU {
             } elseif ($name -match "gtx\s*10[0-9]{2}|titan\s*xp|titan\s*x") {
                 $Global:Env.GPUGen           = "Pascal"
                 $Global:Env.ComputeCap       = "6.1"
-                $Global:Env.SupportedBackend = "MVTOOLS"  # TRT 10 no soporta < 7.5
+                # Pascal soporta Vulkan -> RIFE via NCNN (TRT necesita compute >= 7.5)
+                $Global:Env.SupportedBackend = "RIFE_NCNN"
             } else {
                 $Global:Env.GPUGen           = "NVIDIA antigua"
-                $Global:Env.SupportedBackend = "MVTOOLS"
+                # Maxwell/Kepler tambien soportan Vulkan en general
+                $Global:Env.SupportedBackend = "RIFE_NCNN"
             }
             # Driver NVIDIA
             $Global:Env.DriverVersion = $primary.DriverVersion
         } elseif ($name -match "amd|radeon|rx ") {
             $Global:Env.GPUVendor = "AMD"
-            $Global:Env.SupportedBackend = "MVTOOLS"
-        } elseif ($name -match "intel|arc|iris|uhd|hd graphics") {
+            # AMD discreta soporta Vulkan -> RIFE via NCNN
+            $Global:Env.SupportedBackend = "RIFE_NCNN"
+        } elseif ($name -match "intel.*arc|arc\s+[ab]") {
             $Global:Env.GPUVendor = "Intel"
-            $Global:Env.SupportedBackend = "MVTOOLS"
+            $Global:Env.GPUGen    = "Arc"
+            # Intel Arc tiene Vulkan robusto
+            $Global:Env.SupportedBackend = "RIFE_NCNN"
+        } elseif ($name -match "intel|iris|uhd|hd graphics") {
+            $Global:Env.GPUVendor = "Intel"
+            # iGPU Intel: Vulkan funciona en Iris Xe pero rinde mal en HD Graphics
+            # viejas. Lo seguro es MVTools, pero permitir RIFE_NCNN en Xe/Iris.
+            if ($name -match "iris\s+xe|iris\s+plus") {
+                $Global:Env.SupportedBackend = "RIFE_NCNN"
+            } else {
+                $Global:Env.SupportedBackend = "MVTOOLS"
+            }
         } else {
             $Global:Env.GPUVendor = "Unknown"
             $Global:Env.SupportedBackend = "MVTOOLS"
@@ -968,12 +982,13 @@ function Install-RifeModels {
 }
 
 function Write-InterpolationVpy {
-    param([bool]$IsBlackwell, [switch]$Force)
+    # BackendType: "TRT_RTX" (Blackwell), "TRT" (Turing/Ampere/Ada), "NCNN_VK" (Pascal/AMD/Intel)
+    param([string]$BackendType = "TRT", [switch]$Force)
     Section "interpolation.vpy"
     $dst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
     $parent = Split-Path $dst -Parent
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    
+
     if ((Test-Path $dst) -and -not $Force) { Info "Ya existe (no se sobreescribe; usa Reparar para regenerar)"; return }
     if (Test-Path $dst) {
         $bak = "$dst.bak"
@@ -981,11 +996,21 @@ function Write-InterpolationVpy {
         Info "Backup -> $bak"
     }
 
-    $useRtx = if ($IsBlackwell) { "False  # True = TRT_RTX (experimental)" } else { "False" }
+    # Cuerpo del backend segun tipo
+    # NCNN_VK no soporta el modelo "heavy", usar v4_25 normal
+    # NCNN_VK acepta tambien fp16; num_streams=1 conservador para GPUs viejas/iGPU
+    $modelLine   = if ($BackendType -eq "NCNN_VK") { "RIFEModel.v4_25" } else { "RIFEModel.v4_25_heavy" }
+    $streamsLine = if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }
+    $backendExpr = switch ($BackendType) {
+        "TRT_RTX" { "Backend.TRT_RTX(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
+        "NCNN_VK" { "Backend.NCNN_VK(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
+        default   { "Backend.TRT(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
+    }
+
     $content = @"
 # vpy-template-version: $($Global:VpyTemplateVersion)
 # =============================================================================
-# interpolation.vpy  (RIFE / vs-mlrt)
+# interpolation.vpy  (RIFE / vs-mlrt) - backend: $BackendType
 # mpv inyecta: video_in, container_fps, display_fps
 # =============================================================================
 import math
@@ -994,10 +1019,9 @@ from vsmlrt import RIFE, RIFEModel, Backend
 
 core = vs.core
 
-RIFE_MODEL  = RIFEModel.v4_25_heavy
+RIFE_MODEL  = $modelLine
 RIFE_SCALE  = 1.0   # 0.5 si hay drops en 4K
-NUM_STREAMS = 2
-USE_TRT_RTX = $useRtx
+NUM_STREAMS = $streamsLine
 
 clip = video_in
 
@@ -1016,8 +1040,7 @@ if pad_w or pad_h:
     top, bottom = pad_h // 2, pad_h - pad_h // 2
     clip = core.std.AddBorders(clip, left=left, right=right, top=top, bottom=bottom)
 
-backend = Backend.TRT_RTX(fp16=True, num_streams=NUM_STREAMS, device_id=0) if USE_TRT_RTX \
-    else Backend.TRT(fp16=True, num_streams=NUM_STREAMS, device_id=0)
+backend = $backendExpr
 
 clip = RIFE(clip, model=RIFE_MODEL, backend=backend, multi=multi,
             scale=RIFE_SCALE, video_player=True)
@@ -1205,14 +1228,16 @@ function Set-EnvVar {
 # ACCIONES PRINCIPALES
 # =============================================================================
 function Execute-Full-Install-Steps {
-    param([bool]$IsBlackwell)
+    param([string]$BackendType = "TRT")
     $script:vsPath = Install-VapourSynth
     $script:vsRoot = Split-Path $script:vsPath -Parent
     Install-VsMlrt -VsRoot $script:vsRoot
     Setup-VsmlrtPy -VsRoot $script:vsRoot
     Install-RifeModels -VsRoot $script:vsRoot
-    Write-InterpolationVpy -IsBlackwell $IsBlackwell
-    Write-AutoModeLua
+    Write-InterpolationVpy -BackendType $BackendType
+    # NCNN soporta menos throughput, bajamos buffered/concurrent
+    if ($BackendType -eq "NCNN_VK") { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    else                            { Write-AutoModeLua }
     Write-SetDisplayHz
     Set-EnvVar
 }
@@ -1230,11 +1255,15 @@ function Action-Install {
         Action-Install-MVTools
         return
     }
-    $isBlackwell = $Global:Env.GPUGen -eq "Blackwell"
-    if (-not $isBlackwell) {
-        Info "Backend: RIFE_TRT (TensorRT estandar para $($Global:Env.GPUGen))"
-    } else {
-        Info "Backend: RIFE_TRT_RTX disponible (puedes activarlo en el .vpy)"
+    $backendType = switch ($Global:Env.SupportedBackend) {
+        "RIFE_TRT_RTX" { "TRT_RTX" }
+        "RIFE_NCNN"    { "NCNN_VK" }
+        default        { "TRT" }
+    }
+    switch ($backendType) {
+        "TRT_RTX" { Info "Backend: RIFE via TensorRT-RTX (Blackwell)" }
+        "NCNN_VK" { Info "Backend: RIFE via NCNN-Vulkan ($($Global:Env.GPUGen) - no soporta TensorRT pero si Vulkan)" }
+        default   { Info "Backend: RIFE via TensorRT ($($Global:Env.GPUGen))" }
     }
     Write-Host ""
 
@@ -1253,7 +1282,7 @@ function Action-Install {
 
     if (-not (Test-Path $Global:Config.MpvConfigDir)) { New-Item -ItemType Directory -Path $Global:Config.MpvConfigDir | Out-Null }
     
-    Execute-Full-Install-Steps -IsBlackwell $isBlackwell
+    Execute-Full-Install-Steps -BackendType $backendType
 
     Section "INSTALACION COMPLETA"
     Write-Host ""
@@ -1384,7 +1413,11 @@ function Action-Update {
             }
         }
         3 {
-            $isBw = $Global:Env.GPUGen -eq "Blackwell"
+            $backendType = switch ($Global:Env.SupportedBackend) {
+                "RIFE_TRT_RTX" { "TRT_RTX" }
+                "RIFE_NCNN"    { "NCNN_VK" }
+                default        { "TRT" }
+            }
             if ($Global:Env.SupportedBackend -eq "MVTOOLS") {
                 # Regenerar MVTools .vpy
                 $vpyDst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
@@ -1409,7 +1442,7 @@ clip.set_output()
                 Set-Content $vpyDst $vpyContent -Encoding UTF8
                 Ok "interpolation.vpy (MVTools) regenerado"
             } else {
-                Write-InterpolationVpy -IsBlackwell $isBw -Force
+                Write-InterpolationVpy -BackendType $backendType -Force
             }
             Pause-Continue
         }
@@ -1539,7 +1572,12 @@ function Action-CheckOnlineUpdates {
             }
             
             try {
-                Execute-Full-Install-Steps -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell")
+                $bt = switch ($Global:Env.SupportedBackend) {
+                    "RIFE_TRT_RTX" { "TRT_RTX" }
+                    "RIFE_NCNN"    { "NCNN_VK" }
+                    default        { "TRT" }
+                }
+                Execute-Full-Install-Steps -BackendType $bt
                 Ok "Actualizacion de VapourSynth exitosa."
                 if (Test-Path $vsOld) { Remove-Item $vsOld -Recurse -Force -EA SilentlyContinue }
             } catch {
@@ -1588,12 +1626,20 @@ function Action-Repair {
 
     if (-not $st.VSInstalled) { $vsp = Install-VapourSynth; $st.VSPath = Split-Path $vsp -Parent }
     
-    if ($Global:Env.SupportedBackend -match "RIFE_TRT") {
+    if ($Global:Env.SupportedBackend -match "^RIFE_") {
+        $backendType = switch ($Global:Env.SupportedBackend) {
+            "RIFE_TRT_RTX" { "TRT_RTX" }
+            "RIFE_NCNN"    { "NCNN_VK" }
+            default        { "TRT" }
+        }
         if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
-        if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") -Force }
-        if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered 8 -Concurrent 4 }
+        if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -BackendType $backendType -Force }
+        # NCNN rinde menos -> buffers mas conservadores
+        $buf = if ($backendType -eq "NCNN_VK") { 4 } else { 8 }
+        $cnc = if ($backendType -eq "NCNN_VK") { 2 } else { 4 }
+        if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered $buf -Concurrent $cnc }
         else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     } else {
         # Reparar MVTools
