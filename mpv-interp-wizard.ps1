@@ -172,22 +172,33 @@ function Test-MpvVapourSynth {
     param([string]$MpvExe)
     if (-not $MpvExe -or -not (Test-Path $MpvExe)) { return $false }
     
-    # Intentar buscar mpv.com al lado de mpv.exe (mejor para capturar salida en terminal)
     $exeDir = Split-Path $MpvExe -Parent
     $com = Join-Path $exeDir "mpv.com"
     $target = if (Test-Path $com) { $com } else { $MpvExe }
     
     try {
-        # Ejecutamos mpv --version y buscamos 'vapoursynth' en la lista de features
-        # Usamos -ErrorAction SilentlyContinue para evitar ruidos
-        $out = & $target --version 2>&1
-        $outString = $out | Out-String
-        if ($outString -match "vapoursynth") { return $true }
+        # Usamos System.Diagnostics.Process para capturar salida de apps GUI/WinMain
+        # ya que el operador '&' en PS a veces falla capturando stdout de WinMain exes.
+        $si = New-Object System.Diagnostics.ProcessStartInfo
+        $si.FileName = $target
+        $si.Arguments = "--version"
+        $si.RedirectStandardOutput = $true
+        $si.RedirectStandardError  = $true
+        $si.UseShellExecute        = $false
+        $si.CreateNoWindow         = $true
         
-        # Segundo intento: mpv --vf=help
-        $out = & $target --vf=help 2>&1
-        $outString = $out | Out-String
-        return ($outString -match "vapoursynth")
+        $p = [System.Diagnostics.Process]::Start($si)
+        $out = $p.StandardOutput.ReadToEnd()
+        $err = $p.StandardError.ReadToEnd()
+        $p.WaitForExit(3000)
+        
+        $fullOut = $out + $err
+        if ($fullOut -match "vapoursynth") { return $true }
+        
+        # Fallback: buscar la DLL directamente (comun en builds de shinchiro)
+        if (Test-Path (Join-Path $exeDir "vapoursynth.dll")) { return $true }
+        
+        return $false
     } catch {
         return $false
     }
@@ -1682,6 +1693,15 @@ function Main {
     if (-not $loaded -or -not $Global:Config.BaseDir -or -not $Global:Config.MpvConfigDir) {
         Show-Welcome
         First-Time-Setup
+    }
+
+    # Forzar refresco de cache de updates si acabamos de actualizar el wizard
+    $cacheFile = Get-UpdateCacheFile
+    if (Test-Path $cacheFile) {
+        $c = Get-Content $cacheFile | ConvertFrom-Json -EA SilentlyContinue
+        if ($c -and $c.WizardVersion -ne $Global:WizardVersion) {
+            Remove-Item $cacheFile -Force -EA SilentlyContinue
+        }
     }
 
     Detect-GPU
