@@ -1459,10 +1459,39 @@ function Action-Repair {
     $r = Read-Host "Aplicar reparacion automatica de lo que falte? (s/n)"
     if ($r -ne "s" -and $r -ne "S") { return }
     if (-not $st.VSInstalled) { $vsp = Install-VapourSynth; $st.VSPath = Split-Path $vsp -Parent }
-    if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
-    Setup-VsmlrtPy -VsRoot $st.VSPath
-    if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
-    if (-not $st.VpyInstalled)   { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") }
+    
+    if ($Global:Env.SupportedBackend -eq "RIFE_TRT") {
+        if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
+        Setup-VsmlrtPy -VsRoot $st.VSPath
+        if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
+        if (-not $st.VpyInstalled) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") }
+    } else {
+        # Reparar MVTools
+        if (-not $st.VpyInstalled) {
+            $vpyDst = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
+            # Generar el vpy de MVTools (copiando la logica de Action-Install-MVTools)
+            $vpyContent = @"
+# vpy-template-version: $($Global:VpyTemplateVersion)
+# interpolation.vpy - MVTools (CPU)
+import vapoursynth as vs
+core = vs.core
+clip = video_in
+target_fps = display_fps if display_fps and display_fps > 0 else 60.0
+src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
+factor     = max(2, round(target_fps / src_fps))
+
+clip = core.resize.Bicubic(clip, format=vs.YUV420P8, matrix_s="709")
+sup  = core.mv.Super(clip, pel=2)
+vec_b = core.mv.Analyse(sup, blksize=16, isb=True)
+vec_f = core.mv.Analyse(sup, blksize=16, isb=False)
+clip = core.mv.BlockFPS(clip, sup, vec_b, vec_f, num=int(src_fps*factor*100), den=100, mode=3)
+clip.set_output()
+"@
+            Set-Content $vpyDst $vpyContent -Encoding UTF8
+            Ok "interpolation.vpy (MVTools) regenerado"
+        }
+    }
+
     if (-not $st.LuaInstalled)   { Write-AutoModeLua }
     if (-not $st.SetHzInstalled) { Write-SetDisplayHz }
     Set-EnvVar
