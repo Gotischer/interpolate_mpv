@@ -893,17 +893,86 @@ function Patch-Vsmlrt {
         }
     )
 
+    # IDEMPOTENCIA: usamos regex anclado a inicio/fin de linea para evitar el
+    # bug de String.Contains que matchea "    trt_version" dentro de un
+    # "        trt_version" ya parchado, generando try: anidados malformados.
     foreach ($r in $repl) {
-        if ($c.Contains($r.Old)) {
-            $c = $c.Replace($r.Old, $r.New)
-            $patches++
-        }
+        $oldEsc  = [regex]::Escape($r.Old)
+        $pattern = "(?m)^" + $oldEsc + "\s*$"
+        # Escapar $ para que -replace no lo interprete como referencia de grupo
+        $newEsc  = $r.New -replace '\$', '$$$$'
+        $before  = $c
+        $c = [regex]::Replace($c, $pattern, $newEsc)
+        if ($c -ne $before) { $patches++ }
     }
 
     if ($c -ne $orig) {
         Set-Content $Path $c -NoNewline -Encoding UTF8
     }
     return $patches
+}
+
+function Recover-VsmlrtPy {
+    # Re-extrae vsmlrt.py limpio del bundle vs-mlrt y re-aplica los parches.
+    # Util cuando el archivo quedo malformado por un doble parche.
+    param([string]$VsRoot)
+    Section "Recuperando vsmlrt.py desde bundle"
+
+    $bundleBase = "vsmlrt-windows-x64-cuda.$($Global:Config.MlrtVersion)"
+    $bundle = Join-Path $Global:Config.BaseDir "$bundleBase.7z.001"
+    if (-not (Test-Path $bundle) -and $Global:Config.LocalBundleDir) {
+        $candidate = Join-Path $Global:Config.LocalBundleDir "$bundleBase.7z.001"
+        if (Test-Path $candidate) { $bundle = $candidate }
+    }
+    if (-not (Test-Path $bundle)) {
+        Warn "No se encontro el bundle .7z ($bundleBase.7z.001) para extraer vsmlrt.py limpio."
+        Hint "Corre 'Actualizar -> Actualizar bundle vs-mlrt' y vuelve a intentar"
+        return $false
+    }
+
+    $tmp = Join-Path $env:TEMP "wizard-vsmlrt-recover"
+    if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+
+    $z = Get-7zr
+    & $z e -y "-o$tmp" $bundle "vsmlrt.py" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Warn "Fallo extraer vsmlrt.py del bundle"
+        Remove-Item -Recurse -Force $tmp -EA SilentlyContinue
+        return $false
+    }
+
+    $extracted = Join-Path $tmp "vsmlrt.py"
+    if (-not (Test-Path $extracted)) {
+        Warn "vsmlrt.py no estaba dentro del bundle"
+        Remove-Item -Recurse -Force $tmp -EA SilentlyContinue
+        return $false
+    }
+
+    $dest = Join-Path $VsRoot "Lib\site-packages\vsmlrt.py"
+    if (Test-Path $dest) {
+        $bak = "$dest.broken." + (Get-Date -Format "yyyyMMdd-HHmmss")
+        Copy-Item $dest $bak -Force -EA SilentlyContinue
+        Info "Backup del archivo corrupto -> $bak"
+    }
+    Copy-Item $extracted $dest -Force
+    Remove-Item -Recurse -Force $tmp -EA SilentlyContinue
+    Ok "vsmlrt.py restaurado desde el bundle"
+
+    $n = Patch-Vsmlrt -Path $dest
+    if ($n -gt 0) { Ok "$n parche(s) re-aplicados" }
+    return $true
+}
+
+function Test-VsmlrtPyMalformed {
+    # Devuelve $true si detecta el sintoma de doble parche en vsmlrt.py.
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    try {
+        $c = Get-Content $Path -Raw -Encoding UTF8
+        # Doble try: anidado seguido de trt_version al mismo nivel
+        return $c -match "(?ms)^\s*try:\s*\r?\n\s*try:\s*\r?\n\s*trt_version"
+    } catch { return $false }
 }
 
 # =============================================================================
@@ -1044,6 +1113,18 @@ function Setup-VsmlrtPy {
         # Ni en vs-plugins ni en site-packages: no hay vs-mlrt instalado
         Warn "vsmlrt.py no encontrado ni en vs-plugins/ ni en Lib/site-packages/"
         Hint "Reinstala vs-mlrt: menu Actualizar -> Actualizar bundle vs-mlrt"
+        return
+    }
+
+    # Si el archivo quedo corrupto por un doble parche de versiones <= 1.3.1,
+    # recuperamos desde el bundle antes de re-parchar.
+    if (Test-VsmlrtPyMalformed -Path $destPy) {
+        Warn "vsmlrt.py malformado detectado (doble parche). Recuperando..."
+        if (-not (Recover-VsmlrtPy -VsRoot $VsRoot)) {
+            Warn "No se pudo recuperar automaticamente. Reinstala el bundle vs-mlrt."
+            return
+        }
+        # Recover-VsmlrtPy ya aplica parches, asi que retornamos.
         return
     }
 
