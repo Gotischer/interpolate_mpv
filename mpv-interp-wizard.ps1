@@ -1046,7 +1046,7 @@ function Write-AutoModeLua {
     $content = @"
 $verLine
 -- auto_mode.lua - HDR/SDR auto + cambio de Hz + toggle manual de interpolacion
-local INTERP = "vapoursynth=~~/interpolation.vpy:buffered-frames=$Buffered:concurrent-frames=$Concurrent"
+local INTERP = "vapoursynth=~~/interpolation.vpy:buffered-frames=${Buffered}:concurrent-frames=${Concurrent}"
 local SET_HZ = mp.find_config_file("set_display_hz.ps1")
 local original_hz, hz_changed = 120, false
 
@@ -1598,7 +1598,10 @@ clip.set_output()
         Write-AutoModeLua -Force -Buffered 4 -Concurrent 1
     }
 
-    if (-not $st.LuaInstalled)   { Write-AutoModeLua }
+    if ($st.VSInstalled -and -not $st.LuaInstalled) { 
+        if ($Global:Env.SupportedBackend -match "RIFE_TRT") { Write-AutoModeLua }
+        else { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
+    }
     if (-not $st.SetHzInstalled) { Write-SetDisplayHz }
     Set-EnvVar
     Pause-Continue
