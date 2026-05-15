@@ -598,12 +598,13 @@ function Pause-Continue {
 # HELPERS DE INSTALACION
 # =============================================================================
 function Get-7zr {
-    $z = Join-Path $Global:Config.BaseDir "7zr.exe"
+    $z = [System.IO.Path]::GetFullPath((Join-Path $Global:Config.BaseDir "7zr.exe"))
     if (-not (Test-Path $z)) {
         if (-not (Test-Path $Global:Config.BaseDir)) { New-Item -ItemType Directory -Path $Global:Config.BaseDir | Out-Null }
         Info "Descargando 7zr.exe..."
         Invoke-WebRequest -Uri "https://www.7-zip.org/a/7zr.exe" -OutFile $z
     }
+    Unblock-File $z -ErrorAction SilentlyContinue
     return $z
 }
 
@@ -676,10 +677,15 @@ function Find-Or-Download {
 
 function Expand-7z {
     param([string]$Archive, [string]$DestDir)
-    if (-not (Test-Path $DestDir)) { New-Item -ItemType Directory -Path $DestDir | Out-Null }
+    $ArchiveAbs = (Get-Item $Archive).FullName
+    $DestDirAbs = [System.IO.Path]::GetFullPath($DestDir)
+    if (-not (Test-Path $DestDirAbs)) { New-Item -ItemType Directory -Path $DestDirAbs | Out-Null }
+    
     $z = Get-7zr
-    & $z x -y "-o$DestDir" $Archive | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Fallo al extraer $Archive" }
+    if (-not (Test-Path $ArchiveAbs)) { throw "No se encontro el archivo para extraer: $ArchiveAbs" }
+    
+    & $z x -y "-o$DestDirAbs" "$ArchiveAbs" | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Fallo al extraer $ArchiveAbs (Codigo $LASTEXITCODE)" }
 }
 
 function Patch-Vsmlrt {
