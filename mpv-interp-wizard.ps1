@@ -1035,7 +1035,7 @@ clip.set_output()
 }
 
 function Write-AutoModeLua {
-    param([bool]$Force = $false)
+    param([bool]$Force = $false, [int]$Buffered = 8, [int]$Concurrent = 4)
     Section "auto_mode.lua"
     $scriptsDir = Join-Path $Global:Config.MpvConfigDir "scripts"
     if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
@@ -1046,7 +1046,7 @@ function Write-AutoModeLua {
     $content = @"
 $verLine
 -- auto_mode.lua - HDR/SDR auto + cambio de Hz + toggle manual de interpolacion
-local INTERP = "vapoursynth=~~/interpolation.vpy:buffered-frames=8:concurrent-frames=4"
+local INTERP = "vapoursynth=~~/interpolation.vpy:buffered-frames=$Buffered:concurrent-frames=$Concurrent"
 local SET_HZ = mp.find_config_file("set_display_hz.ps1")
 local original_hz, hz_changed = 120, false
 
@@ -1565,6 +1565,7 @@ function Action-Repair {
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
         if (-not $st.VpyInstalled) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") }
+        Write-AutoModeLua -Force -Buffered 8 -Concurrent 4
     } else {
         # Reparar MVTools
         if (-not $st.VpyInstalled) {
@@ -1582,16 +1583,19 @@ target_fps = display_fps if display_fps and display_fps > 0 else 60.0
 src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
 factor     = max(2, round(target_fps / src_fps))
 
+# Asegurar formato compatible y procesar
+clip = core.std.SetFieldBased(clip, 0)
 clip = core.resize.Bicubic(clip, format=vs.YUV420P8, matrix_s="709")
 sup  = core.mv.Super(clip, pel=2)
 vec_b = core.mv.Analyse(sup, blksize=16, isb=True)
 vec_f = core.mv.Analyse(sup, blksize=16, isb=False)
-clip = core.mv.BlockFPS(clip, sup, vec_b, vec_f, num=int(src_fps*factor*100), den=100, mode=3)
+clip = core.mv.BlockFPS(clip, sup, vec_b, vec_f, num=int(src_fps*factor*1000), den=1000, mode=3)
 clip.set_output()
 "@
             Set-Content $vpyDst $vpyContent -Encoding UTF8
             Ok "interpolation.vpy (MVTools) regenerado"
         }
+        Write-AutoModeLua -Force -Buffered 4 -Concurrent 1
     }
 
     if (-not $st.LuaInstalled)   { Write-AutoModeLua }
