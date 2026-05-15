@@ -45,11 +45,15 @@ $Global:Config = @{
     VsReleasePrevious   = ""
     MlrtVersion         = "v15.16"
     MlrtVersionPrevious = ""
-    # Perfil RIFE (escala y modelo). El wizard pone defaults segun backend.
+    # Perfil RIFE (escala, modelo, precision, streams). Defaults segun backend.
     # Modelos validos: v4.25_heavy, v4.25, v4.22
     # Escala: 1.0 (full) o 0.5 (half - 4x mas rapido, util en GPUs lentas)
+    # Fp16:    True (rapido, default) o False (fp32 - mejor bordes, RTX 4070+)
+    # Streams: 2 (default, mas throughput) o 1 (mas determinista)
     RifeScale           = 1.0
     RifeModel           = "v4.25_heavy"
+    RifeFp16            = $true
+    RifeStreams         = 2
 }
 
 $Global:ConfigFile = if ($env:MPV_INTERP_HOME -and (Test-Path $env:MPV_INTERP_HOME)) {
@@ -1184,16 +1188,22 @@ function Write-InterpolationVpy {
         Info "Backup -> $bak"
     }
 
-    # Modelo y escala vienen de Config (configurables por usuario o benchmark)
+    # Modelo, escala, fp16 y streams vienen de Config (configurables por preset o benchmark)
     $modelKey  = $Global:Config.RifeModel
     if (-not $modelKey) { $modelKey = if ($BackendType -eq "NCNN_VK") { "v4.22" } else { "v4.25_heavy" } }
     $scaleVal  = if ($Global:Config.RifeScale) { [double]$Global:Config.RifeScale } else { 1.0 }
     $modelLine = "RIFEModel." + ($modelKey -replace '\.', '_')   # "v4.22" -> "v4_22"
-    $streamsLine = if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }
+
+    # Streams: Config tiene prioridad, sino default por backend
+    $streamsLine = if ($Global:Config.RifeStreams) { "$($Global:Config.RifeStreams)" } else { (if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }) }
+
+    # fp16: Config tiene prioridad, default True
+    $fpStr = if ($null -ne $Global:Config.RifeFp16 -and $Global:Config.RifeFp16 -eq $false) { "False" } else { "True" }
+
     $backendExpr = switch ($BackendType) {
-        "TRT_RTX" { "Backend.TRT_RTX(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
-        "NCNN_VK" { "Backend.NCNN_VK(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
-        default   { "Backend.TRT(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
+        "TRT_RTX" { "Backend.TRT_RTX(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
+        "NCNN_VK" { "Backend.NCNN_VK(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
+        default   { "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
     }
 
     $content = @"
@@ -1435,13 +1445,15 @@ function Set-RifeProfile {
     param([string]$Profile)
     # Aplica un preset en $Global:Config y lo persiste.
     switch ($Profile) {
-        "maxima"      { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25_heavy" }
-        "calidad"     { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25" }
-        "balanceado"  { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.22" }
-        "rendimiento" { $Global:Config.RifeScale = 0.5; $Global:Config.RifeModel = "v4.22" }
+        "ultra"       { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25_heavy"; $Global:Config.RifeFp16 = $false; $Global:Config.RifeStreams = 1 }
+        "maxima"      { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25_heavy"; $Global:Config.RifeFp16 = $true;  $Global:Config.RifeStreams = 2 }
+        "calidad"     { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25";       $Global:Config.RifeFp16 = $true;  $Global:Config.RifeStreams = 2 }
+        "balanceado"  { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.22";       $Global:Config.RifeFp16 = $true;  $Global:Config.RifeStreams = 2 }
+        "rendimiento" { $Global:Config.RifeScale = 0.5; $Global:Config.RifeModel = "v4.22";       $Global:Config.RifeFp16 = $true;  $Global:Config.RifeStreams = 1 }
     }
     Save-Config | Out-Null
-    Info "Perfil: $Profile (modelo=$($Global:Config.RifeModel), scale=$($Global:Config.RifeScale))"
+    $fp = if ($Global:Config.RifeFp16) { "fp16" } else { "fp32" }
+    Info "Perfil: $Profile  (modelo=$($Global:Config.RifeModel), scale=$($Global:Config.RifeScale), $fp, streams=$($Global:Config.RifeStreams))"
 }
 
 function Action-BenchmarkRife {
@@ -1456,7 +1468,10 @@ function Action-BenchmarkRife {
     Write-Host ""
 
     # Perfiles de mas pesado a mas ligero. Salimos en cuanto uno cumple.
+    # Nota: el benchmark usa siempre NCNN_VK (no podemos probar TRT desde aqui
+    # sin compilar engines, lo que tarda minutos). El resultado es indicativo.
     $profiles = @(
+        @{ Name = "ultra";       Scale = 1.0; Model = "v4.25_heavy" },
         @{ Name = "maxima";      Scale = 1.0; Model = "v4.25_heavy" },
         @{ Name = "calidad";     Scale = 1.0; Model = "v4.25"        },
         @{ Name = "balanceado";  Scale = 1.0; Model = "v4.22"        },
@@ -1517,20 +1532,22 @@ function Ask-RifeProfile {
     # Para flujos de instalacion: pregunta al usuario el perfil deseado.
     Write-Host ""
     Info "Elige perfil de RIFE:"
-    Write-Host "  [1] Maxima calidad  (modelo heavy, scale 1.0)  - solo GPUs potentes"
-    Write-Host "  [2] Calidad         (modelo v4.25, scale 1.0)"
-    Write-Host "  [3] Balanceado      (modelo v4.22, scale 1.0)  - recomendado para GPUs medias"
-    Write-Host "  [4] Rendimiento     (modelo v4.22, scale 0.5)  - GPUs viejas o si hay drops"
-    Write-Host "  [5] Test automatico (recomendado)              - prueba todos y elige el mejor"
+    Write-Host "  [1] Ultra           (heavy, fp32, 1 stream)    - solo RTX 4070+ / 5070+"
+    Write-Host "  [2] Maxima calidad  (heavy, fp16, 2 streams)   - GPUs potentes"
+    Write-Host "  [3] Calidad         (v4.25, fp16, 2 streams)"
+    Write-Host "  [4] Balanceado      (v4.22, fp16, 2 streams)   - recomendado para GPUs medias"
+    Write-Host "  [5] Rendimiento     (v4.22, scale 0.5, fp16)   - GPUs viejas o si hay drops"
+    Write-Host "  [6] Test automatico (recomendado)              - prueba varios y elige el mejor"
     Write-Host ""
     while ($true) {
-        $r = Read-Host "Opcion (1-5)"
+        $r = Read-Host "Opcion (1-6)"
         switch ($r) {
-            "1" { Set-RifeProfile -Profile "maxima";       return $true }
-            "2" { Set-RifeProfile -Profile "calidad";      return $true }
-            "3" { Set-RifeProfile -Profile "balanceado";   return $true }
-            "4" { Set-RifeProfile -Profile "rendimiento";  return $true }
-            "5" { Action-BenchmarkRife; return $true }
+            "1" { Set-RifeProfile -Profile "ultra";        return $true }
+            "2" { Set-RifeProfile -Profile "maxima";       return $true }
+            "3" { Set-RifeProfile -Profile "calidad";      return $true }
+            "4" { Set-RifeProfile -Profile "balanceado";   return $true }
+            "5" { Set-RifeProfile -Profile "rendimiento";  return $true }
+            "6" { Action-BenchmarkRife; return $true }
             default { Warn "Opcion invalida" }
         }
     }
