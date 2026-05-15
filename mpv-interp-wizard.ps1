@@ -781,10 +781,10 @@ function Install-VapourSynth {
     Info "Ejecutando instalador de VapourSynth (1-3 min)..."
     Push-Location $base
     try {
-        powershell -ExecutionPolicy Bypass -NoProfile -File $inst -Unattended -TargetFolder "$vsDirAbs" -PythonVersionMajor 3 -PythonVersionMinor 13
+        powershell -ExecutionPolicy Bypass -NoProfile -File $inst -Unattended -TargetFolder "$vsDirAbs" -PythonVersionMajor 3 -PythonVersionMinor 13 | Out-Host
     } catch {
         Warn "Reintentando modo interactivo..."
-        powershell -ExecutionPolicy Bypass -NoProfile -File $inst
+        powershell -ExecutionPolicy Bypass -NoProfile -File $inst | Out-Host
     } finally { Pop-Location }
 
     $vspipe = Get-ChildItem $vsDir -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
