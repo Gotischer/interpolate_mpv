@@ -30,7 +30,7 @@ Doble clic y listo. No requiere instalación previa de PowerShell ni dependencia
 ## Requisitos
 
 - Windows 10 o superior.
-- mpv ya instalado (en cualquier carpeta; el asistente lo detecta).
+- **mpv con soporte VapourSynth** (Se recomiendan los builds de [shinchiro](https://github.com/shinchiro/mpv-winbuild-cmake/releases) o [Gresaca](https://github.com/Gresaca/mpv-build/releases)).
 - ~7 GB libres en disco para el backend RIFE.
 - Driver NVIDIA reciente si quieres usar RIFE.
 
