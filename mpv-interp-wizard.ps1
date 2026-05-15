@@ -1573,8 +1573,9 @@ function Action-Repair {
         if (-not $st.MlrtInstalled -or $st.MlrtVersion -like "antigua*") { Install-VsMlrt -VsRoot $st.VSPath }
         Setup-VsmlrtPy -VsRoot $st.VSPath
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
-        if (-not $st.VpyInstalled) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") -Force }
-        Write-AutoModeLua -Force -Buffered 8 -Concurrent 4
+        if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -IsBlackwell ($Global:Env.GPUGen -eq "Blackwell") -Force }
+        if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered 8 -Concurrent 4 }
+        else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     } else {
         # Reparar MVTools
         if (-not $st.VpyInstalled) {
@@ -1604,13 +1605,10 @@ clip.set_output()
             Set-Content $vpyDst $vpyContent -Encoding UTF8
             Ok "interpolation.vpy (MVTools) regenerado"
         }
-        Write-AutoModeLua -Force -Buffered 4 -Concurrent 1
+        if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered 4 -Concurrent 1 }
+        else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     }
 
-    if ($st.VSInstalled -and -not $st.LuaInstalled) { 
-        if ($Global:Env.SupportedBackend -match "RIFE_TRT") { Write-AutoModeLua }
-        else { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
-    }
     if (-not $st.SetHzInstalled) { Write-SetDisplayHz }
     Set-EnvVar
     Pause-Continue
