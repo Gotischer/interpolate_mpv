@@ -539,7 +539,9 @@ function Detect-Installation {
             }
             $modelsDir = Join-Path $pluginDir "models"
             if (Test-Path $modelsDir) {
-                $onnx = Get-ChildItem $modelsDir -Filter "*.onnx" -EA SilentlyContinue
+                # vsmlrt 15+ usa subcarpetas: models/rife/*.onnx, models/cugan/*.onnx, etc.
+                # Buscamos recursivo para soportar ambas estructuras (vieja flat y nueva con subcarpetas).
+                $onnx = Get-ChildItem $modelsDir -Filter "*.onnx" -Recurse -EA SilentlyContinue
                 $state.ModelsInstalled = $onnx.Count -gt 0
             }
         }
@@ -956,12 +958,21 @@ function Setup-VsmlrtPy {
 function Install-RifeModels {
     param([string]$VsRoot)
     Section "Modelos RIFE"
+    # vsmlrt 15+ espera los modelos en models/rife/, no en models/ flat.
     $modelsDir = Join-Path $VsRoot "vs-plugins\models"
-    if (-not (Test-Path $modelsDir)) { New-Item -ItemType Directory -Path $modelsDir | Out-Null }
+    $rifeDir   = Join-Path $modelsDir "rife"
+    if (-not (Test-Path $rifeDir)) { New-Item -ItemType Directory -Path $rifeDir -Force | Out-Null }
+
+    # Migrar modelos viejos si estaban flat (instalaciones previas a v1.2.1)
+    $flatRife = Get-ChildItem $modelsDir -Filter "rife_*.onnx" -EA SilentlyContinue
+    if ($flatRife.Count -gt 0) {
+        Info "Migrando $($flatRife.Count) modelo(s) de models/ a models/rife/"
+        foreach ($f in $flatRife) { Move-Item $f.FullName (Join-Path $rifeDir $f.Name) -Force -EA SilentlyContinue }
+    }
 
     $wanted = @("v4.25_heavy", "v4.25", "v4.22")
-    $missing = $wanted | Where-Object { -not (Test-Path (Join-Path $modelsDir "rife_$_.onnx")) }
-    if ($missing.Count -eq 0) { Info "Todos los modelos presentes"; return }
+    $missing = $wanted | Where-Object { -not (Test-Path (Join-Path $rifeDir "rife_$_.onnx")) }
+    if ($missing.Count -eq 0) { Info "Todos los modelos presentes en models/rife/"; return }
 
     $rel = Invoke-RestMethod "https://api.github.com/repos/AmusementClub/vs-mlrt/releases/tags/external-models"
     foreach ($v in $missing) {
@@ -973,12 +984,12 @@ function Install-RifeModels {
         if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
         Expand-7z -Archive $arch -DestDir $tmp
         Get-ChildItem $tmp -Filter "*.onnx" -Recurse | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $modelsDir $_.Name) -Force
-            Info "  $($_.Name)"
+            Copy-Item $_.FullName (Join-Path $rifeDir $_.Name) -Force
+            Info "  rife/$($_.Name)"
         }
         Remove-Item $tmp -Recurse -Force
     }
-    Ok "Modelos instalados"
+    Ok "Modelos instalados en models/rife/"
 }
 
 function Write-InterpolationVpy {
