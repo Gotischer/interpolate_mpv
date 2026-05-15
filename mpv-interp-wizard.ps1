@@ -1523,9 +1523,13 @@ function Action-Diagnose {
     Info "Instalacion:"
     Info "  Estado           : $($st.OverallStatus)"
     Info "  VapourSynth      : $(if ($st.VSInstalled){$st.VSPath}else{'no instalado'})"
-    Info "  vs-mlrt version  : $($st.MlrtVersion)"
-    Info "  vsmlrt.py parchado: $($st.VsmlrtPyPatched)"
-    Info "  Modelos RIFE     : $($st.ModelsInstalled)"
+    
+    if ($Global:Env.SupportedBackend -eq "RIFE_TRT") {
+        Info "  vs-mlrt version  : $($st.MlrtVersion)"
+        Info "  vsmlrt.py parchado: $($st.VsmlrtPyPatched)"
+        Info "  Modelos RIFE     : $($st.ModelsInstalled)"
+    }
+
     Info "  interpolation.vpy: $($st.VpyInstalled)"
     Info "  auto_mode.lua    : $($st.LuaInstalled)"
     Info "  set_display_hz   : $($st.SetHzInstalled)"
