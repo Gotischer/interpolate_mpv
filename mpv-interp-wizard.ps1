@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 6      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 7      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -1231,11 +1231,18 @@ function Write-InterpolationVpy {
         Info "Backup -> $bak"
     }
 
-    # Modelo, escala, fp16 y streams vienen de Config (configurables por preset o benchmark)
+    # Modelo, fp16 y streams vienen de Config. RifeScale ya no se pasa a RIFE
+    # (vsmlrt v15+ requiere scale=1.0 para modelos v4.7+); en su lugar
+    # convertimos RifeScale en un threshold de downscale-antes-de-RIFE.
     $modelKey  = $Global:Config.RifeModel
     if (-not $modelKey) { $modelKey = if ($BackendType -eq "NCNN_VK") { "v4.22" } else { "v4.25_heavy" } }
-    $scaleVal  = if ($Global:Config.RifeScale) { [double]$Global:Config.RifeScale } else { 1.0 }
     $modelLine = "RIFEModel." + ($modelKey -replace '\.', '_')   # "v4.22" -> "v4_22"
+
+    # Threshold de downscale (en pixeles de ancho):
+    # - RifeScale == 0.5 (perfil "rendimiento"): downscale agresivo a 1280 (720p)
+    # - RifeScale == 1.0 (resto de perfiles): solo downscale 4K -> 1920p
+    $scaleCfg = if ($Global:Config.RifeScale) { [double]$Global:Config.RifeScale } else { 1.0 }
+    $dsTarget = if ($scaleCfg -le 0.6) { 1280 } else { 1920 }
 
     # Streams: Config tiene prioridad, sino default por backend
     $streamsLine = if ($Global:Config.RifeStreams) { "$($Global:Config.RifeStreams)" } else { (if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }) }
@@ -1262,20 +1269,28 @@ from vsmlrt import RIFE, RIFEModel, Backend
 core = vs.core
 
 RIFE_MODEL_DEFAULT  = $modelLine
-RIFE_SCALE_DEFAULT  = $scaleVal   # 0.5 = procesa a la mitad (4x mas rapido)
 NUM_STREAMS         = $streamsLine
+# Si el ancho del video > este valor, hacemos downscale antes de RIFE.
+# 0 = sin downscale (calidad nativa siempre).
+DOWNSCALE_TARGET_W  = $dsTarget
 
 clip = video_in
+orig_w = clip.width
+orig_h = clip.height
 
-# Escalado adaptativo por resolucion. Para contenido QHD/4K (>=2560 ancho)
-# el costo de RIFE crece 4x respecto a 1080p; bajamos automaticamente a
-# scale 0.5 para no saturar la GPU. Editalo si quieres comportamiento fijo.
-if clip.width >= 2560:
-    RIFE_SCALE = 0.5
-    # En 4K es mejor usar el modelo no-heavy: misma red base, menos param
-    RIFE_MODEL = RIFEModel.v4_25 if RIFE_MODEL_DEFAULT == RIFEModel.v4_25_heavy else RIFE_MODEL_DEFAULT
+# vsmlrt v15+ requiere scale=1.0 para modelos RIFE >= v4.7 (que son los actuales).
+# Para reducir costo en 4K o en GPUs lentas, hacemos downscale manual antes
+# de RIFE y upscale despues, en vez de pasarle scale=0.5 al modelo.
+DOWNSCALE_FOR_RIFE = DOWNSCALE_TARGET_W > 0 and orig_w > DOWNSCALE_TARGET_W
+if DOWNSCALE_FOR_RIFE:
+    new_w = DOWNSCALE_TARGET_W
+    new_h = int(round(orig_h * (new_w / orig_w)))
+    if new_h % 2: new_h -= 1
+    clip = core.resize.Bicubic(clip, width=new_w, height=new_h)
+    # En 4K bajado a 2K, el modelo "heavy" sigue siendo viable; en perfil
+    # "rendimiento" igual usaria v4.22 que ya es liviano.
+    RIFE_MODEL = RIFEModel.v4_25 if (orig_w >= 2560 and RIFE_MODEL_DEFAULT == RIFEModel.v4_25_heavy) else RIFE_MODEL_DEFAULT
 else:
-    RIFE_SCALE = RIFE_SCALE_DEFAULT
     RIFE_MODEL = RIFE_MODEL_DEFAULT
 
 target_fps = display_fps if display_fps and display_fps > 0 else 60.0
@@ -1298,11 +1313,16 @@ if pad_w or pad_h:
 
 backend = $backendExpr
 
+# scale=1.0 obligatorio para RIFE v4.7+; el "downscale antes" reemplaza scale=0.5
 clip = RIFE(clip, model=RIFE_MODEL, backend=backend, multi=multi,
-            scale=RIFE_SCALE, video_player=True)
+            scale=1.0, video_player=True)
 
 if pad_w or pad_h:
     clip = core.std.Crop(clip, left=left, right=right, top=top, bottom=bottom)
+
+# Restaurar resolucion original si bajamos para RIFE
+if DOWNSCALE_FOR_RIFE:
+    clip = core.resize.Bicubic(clip, width=orig_w, height=orig_h)
 
 clip = core.resize.Bicubic(clip, format=vs.YUV420P10, matrix_s="709",
     range_in_s="full", range_s="limited", dither_type="error_diffusion")
