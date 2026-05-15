@@ -1736,6 +1736,23 @@ function Main {
 
     Detect-GPU
 
+    # Limpieza automatica de respaldos sueltos en scripts/ (versiones < 1.1.2
+    # los dejaban como auto_mode.lua.bak alli y mpv intentaba cargarlos como script).
+    try {
+        $scriptsDir = Join-Path $Global:Config.MpvConfigDir "scripts"
+        if (Test-Path $scriptsDir) {
+            $orphans = @(Get-ChildItem $scriptsDir -Filter "auto_mode.lua*.bak" -EA SilentlyContinue)
+            if ($orphans.Count -gt 0) {
+                $bakDir = Join-Path $Global:Config.MpvConfigDir "wizard-backups"
+                if (-not (Test-Path $bakDir)) { New-Item -ItemType Directory -Path $bakDir -Force | Out-Null }
+                foreach ($f in $orphans) {
+                    Move-Item $f.FullName (Join-Path $bakDir $f.Name) -Force -EA SilentlyContinue
+                }
+                Info "Movidos $($orphans.Count) respaldo(s) sueltos de scripts/ a wizard-backups/"
+            }
+        }
+    } catch {}
+
     # Chequeo de updates en background (silencioso, con cache 24h)
     $updateHints = @()
     $wizRel = Get-LatestGithubRelease -Repo $Global:WizardRepo
