@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 5      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 6      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -55,6 +55,9 @@ $Global:Config = @{
     RifeModel           = "v4.25_heavy"
     RifeFp16            = $true
     RifeStreams         = 2
+    # Display objetivo para el cambio de Hz automatico en HDR.
+    # Vacio = autodetectar primario. O "\\.\DISPLAY2" para apuntar manualmente.
+    DisplayDevice       = ""
 }
 
 $Global:ConfigFile = if ($env:MPV_INTERP_HOME -and (Test-Path $env:MPV_INTERP_HOME)) {
@@ -799,6 +802,52 @@ function Expand-7z {
     if ($LASTEXITCODE -ne 0) { throw "Fallo al extraer $ArchiveAbs (Codigo $LASTEXITCODE)" }
 }
 
+function Get-AvailableDisplays {
+    # Devuelve un array de objetos con DeviceName, FriendlyName y IsPrimary.
+    Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public class DisplayEnum {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+    public struct DISPLAY_DEVICE {
+        public uint cb;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceString;
+        public uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceKey;
+    }
+    [DllImport("user32.dll",CharSet=CharSet.Ansi)] public static extern bool EnumDisplayDevices(string d,uint n,ref DISPLAY_DEVICE info,uint flags);
+    public const uint DISPLAY_DEVICE_PRIMARY_DEVICE = 0x4;
+    public const uint DISPLAY_DEVICE_ACTIVE = 0x1;
+}
+"@ -ErrorAction SilentlyContinue
+
+    $displays = @()
+    $dd = New-Object DisplayEnum+DISPLAY_DEVICE
+    $dd.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($dd)
+    $i = 0
+    while ([DisplayEnum]::EnumDisplayDevices($null, $i, [ref]$dd, 0)) {
+        if (($dd.StateFlags -band [DisplayEnum]::DISPLAY_DEVICE_ACTIVE) -ne 0) {
+            # Pedir el nombre amigable del monitor adjunto
+            $monitor = New-Object DisplayEnum+DISPLAY_DEVICE
+            $monitor.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($monitor)
+            $friendly = $dd.DeviceString
+            if ([DisplayEnum]::EnumDisplayDevices($dd.DeviceName, 0, [ref]$monitor, 0)) {
+                if ($monitor.DeviceString) { $friendly = $monitor.DeviceString }
+            }
+            $displays += [PSCustomObject]@{
+                DeviceName   = $dd.DeviceName
+                FriendlyName = $friendly
+                IsPrimary    = (($dd.StateFlags -band [DisplayEnum]::DISPLAY_DEVICE_PRIMARY_DEVICE) -ne 0)
+            }
+        }
+        $i++
+        $dd = New-Object DisplayEnum+DISPLAY_DEVICE
+        $dd.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($dd)
+    }
+    return $displays
+}
+
 function Get-MonitorRefreshRate {
     # Devuelve el refresh rate (Hz) del monitor primario, o 60 si no se puede detectar.
     try {
@@ -1235,11 +1284,22 @@ from vsmlrt import RIFE, RIFEModel, Backend
 
 core = vs.core
 
-RIFE_MODEL  = $modelLine
-RIFE_SCALE  = $scaleVal   # 0.5 = procesa a la mitad (4x mas rapido)
-NUM_STREAMS = $streamsLine
+RIFE_MODEL_DEFAULT  = $modelLine
+RIFE_SCALE_DEFAULT  = $scaleVal   # 0.5 = procesa a la mitad (4x mas rapido)
+NUM_STREAMS         = $streamsLine
 
 clip = video_in
+
+# Escalado adaptativo por resolucion. Para contenido QHD/4K (>=2560 ancho)
+# el costo de RIFE crece 4x respecto a 1080p; bajamos automaticamente a
+# scale 0.5 para no saturar la GPU. Editalo si quieres comportamiento fijo.
+if clip.width >= 2560:
+    RIFE_SCALE = 0.5
+    # En 4K es mejor usar el modelo no-heavy: misma red base, menos param
+    RIFE_MODEL = RIFEModel.v4_25 if RIFE_MODEL_DEFAULT == RIFEModel.v4_25_heavy else RIFE_MODEL_DEFAULT
+else:
+    RIFE_SCALE = RIFE_SCALE_DEFAULT
+    RIFE_MODEL = RIFE_MODEL_DEFAULT
 
 target_fps = display_fps if display_fps and display_fps > 0 else 60.0
 src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
@@ -1382,11 +1442,19 @@ function Write-SetDisplayHz {
         Copy-Item $dst (Join-Path $bakDir "set_display_hz.ps1.$stamp.bak") -Force
         Info "Backup -> wizard-backups/set_display_hz.ps1.$stamp.bak"
     }
-    $content = @'
+    # El default del param se embebe en el template segun la preferencia del usuario:
+    # - Si Config.DisplayDevice esta seteado: lo usamos como default (ej. "\\.\DISPLAY2")
+    # - Si esta vacio: default tambien vacio -> el script autodetecta el primario
+    $defaultDevice = if ($Global:Config.DisplayDevice) { $Global:Config.DisplayDevice } else { "" }
+    $defaultDeviceEscaped = $defaultDevice.Replace('\', '\\')
+
+    $content = @"
 # set_display_hz.ps1 (sethz-template-version: 2)
-# Cambia el refresh rate del monitor primario al Hz indicado.
-# Si pasa -Device explicito, usa ese; sino autodetecta.
-param([double]$Hz, [string]$Device = "")
+# Cambia el refresh rate de un display al Hz indicado.
+# El device por defecto se configura en el wizard (Config.DisplayDevice).
+# Si esta vacio, autodetecta el monitor primario.
+param([double]`$Hz, [string]`$Device = "$defaultDeviceEscaped")
+"@ + @'
 
 Add-Type @"
 using System; using System.Runtime.InteropServices;
@@ -2153,6 +2221,7 @@ function Action-Config {
         Info "Archivo: $Global:ConfigFile"
         Write-Host ""
 
+        $displayLabel = if ($Global:Config.DisplayDevice) { $Global:Config.DisplayDevice } else { "(autodetectar primario)" }
         $opts = @(
             ("BaseDir         = " + $(if ($Global:Config.BaseDir) { $Global:Config.BaseDir } else { "(vacio)" })),
             ("MpvConfigDir    = " + $(if ($Global:Config.MpvConfigDir) { $Global:Config.MpvConfigDir } else { "(vacio)" })),
@@ -2160,6 +2229,7 @@ function Action-Config {
             ("LocalBundleDir  = " + $(if ($Global:Config.LocalBundleDir) { $Global:Config.LocalBundleDir } else { "(no configurado)" })),
             ("VsRelease       = " + $Global:Config.VsRelease),
             ("MlrtVersion     = " + $Global:Config.MlrtVersion),
+            ("DisplayDevice   = " + $displayLabel + "   (para cambio de Hz en HDR)"),
             "Volver al menu principal"
         )
         $i = Show-Menu -Title "Que quieres editar?" -Options $opts -Footer "Cambios se guardan automaticamente"
@@ -2188,9 +2258,59 @@ function Action-Config {
                 $v = Read-Host "  Nueva MlrtVersion [$($Global:Config.MlrtVersion)]"
                 if ($v) { $Global:Config.MlrtVersion = $v; Save-Config }
             }
-            { $_ -eq 6 -or $_ -eq -1 } { return }
+            6 { Action-PickDisplayDevice }
+            { $_ -eq 7 -or $_ -eq -1 } { return }
         }
     }
+}
+
+function Action-PickDisplayDevice {
+    Clear-Host
+    Title "ELEGIR DISPLAY PARA CAMBIO DE Hz"
+    Write-Host "  Este display recibe el cambio automatico de Hz cuando se reproduce" -ForegroundColor Gray
+    Write-Host "  un video HDR. Util si tienes un TV ademas del monitor primario." -ForegroundColor Gray
+    Write-Host ""
+
+    $displays = Get-AvailableDisplays
+    if ($displays.Count -eq 0) {
+        Warn "No se encontraron displays activos."
+        Pause-Continue
+        return
+    }
+
+    $options = @()
+    $options += "Autodetectar monitor primario"
+    for ($i = 0; $i -lt $displays.Count; $i++) {
+        $d = $displays[$i]
+        $tag = if ($d.IsPrimary) { " (primario)" } else { "" }
+        $options += ("{0} - {1}{2}" -f $d.DeviceName, $d.FriendlyName, $tag)
+    }
+    $options += "Cancelar"
+
+    $sel = Show-Menu -Title "Que display recibe el cambio de Hz?" -Options $options
+    if ($sel -le 0 -or $sel -eq -1) {
+        if ($sel -eq 0) {
+            $Global:Config.DisplayDevice = ""
+            Save-Config | Out-Null
+            Ok "DisplayDevice = (autodetectar primario)"
+        }
+    } elseif ($sel -le $displays.Count) {
+        $chosen = $displays[$sel - 1]
+        $Global:Config.DisplayDevice = $chosen.DeviceName
+        Save-Config | Out-Null
+        Ok "DisplayDevice = $($chosen.DeviceName) ($($chosen.FriendlyName))"
+    } else {
+        Info "Cancelado"
+        return
+    }
+
+    # Si el script set_display_hz.ps1 ya existe, regenerarlo con el nuevo default
+    $setHz = Join-Path $Global:Config.MpvConfigDir "set_display_hz.ps1"
+    if (Test-Path $setHz) {
+        $r = Read-Host "Regenerar set_display_hz.ps1 con el nuevo display ahora? (s/n)"
+        if ($r -eq "s" -or $r -eq "S") { Write-SetDisplayHz -Force }
+    }
+    Pause-Continue
 }
 
 # =============================================================================
