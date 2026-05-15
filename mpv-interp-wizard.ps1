@@ -45,6 +45,11 @@ $Global:Config = @{
     VsReleasePrevious   = ""
     MlrtVersion         = "v15.16"
     MlrtVersionPrevious = ""
+    # Perfil RIFE (escala y modelo). El wizard pone defaults segun backend.
+    # Modelos validos: v4.25_heavy, v4.25, v4.22
+    # Escala: 1.0 (full) o 0.5 (half - 4x mas rapido, util en GPUs lentas)
+    RifeScale           = 1.0
+    RifeModel           = "v4.25_heavy"
 }
 
 $Global:ConfigFile = if ($env:MPV_INTERP_HOME -and (Test-Path $env:MPV_INTERP_HOME)) {
@@ -771,6 +776,85 @@ function Expand-7z {
     if ($LASTEXITCODE -ne 0) { throw "Fallo al extraer $ArchiveAbs (Codigo $LASTEXITCODE)" }
 }
 
+function Get-MonitorRefreshRate {
+    # Devuelve el refresh rate (Hz) del monitor primario, o 60 si no se puede detectar.
+    try {
+        $hz = (Get-CimInstance Win32_VideoController -EA SilentlyContinue |
+               Where-Object { $_.CurrentRefreshRate -and $_.CurrentRefreshRate -gt 0 } |
+               Select-Object -First 1).CurrentRefreshRate
+        if ($hz -and $hz -gt 0) { return [int]$hz }
+    } catch {}
+    return 60
+}
+
+function Run-NcnnBenchmark {
+    # Genera un .vpy de prueba con el perfil dado y mide cuantos fps puede generar.
+    # Devuelve fps efectivos (frames de salida / segundo) o $null si falla.
+    param(
+        [double]$Scale,
+        [string]$Model,
+        [int]$FramesIn = 30   # se generan 2x en la salida (multi=2)
+    )
+    $vsRoot = $null
+    $vspipe = $null
+    $candidates = @(
+        (Join-Path $Global:Config.BaseDir "vapoursynth-portable\VSPipe.exe")
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { $vspipe = $c; break } }
+    if (-not $vspipe) {
+        $vspipeCmd = Get-ChildItem (Join-Path $Global:Config.BaseDir "vapoursynth-portable") -Filter "VSPipe.exe" -Recurse -EA SilentlyContinue | Select-Object -First 1
+        if ($vspipeCmd) { $vspipe = $vspipeCmd.FullName }
+    }
+    if (-not $vspipe) { Warn "No se encontro VSPipe.exe para benchmark"; return $null }
+
+    $modelPy = "RIFEModel." + ($Model -replace '\.', '_')
+    $tmpVpy  = Join-Path $env:TEMP "wizard-bench-$([guid]::NewGuid().Guid.Substring(0,8)).vpy"
+    $vpy = @"
+import math
+import vapoursynth as vs
+from vsmlrt import RIFE, RIFEModel, Backend
+core = vs.core
+
+clip = core.std.BlankClip(width=1920, height=1080, format=vs.YUV420P8,
+                          length=$FramesIn, fpsnum=24, fpsden=1)
+# Variacion para evitar atajos de optimizacion en frames identicos
+clip = core.std.Levels(clip, gamma=0.9)
+
+clip = core.resize.Bicubic(clip, format=vs.RGBH, matrix_in_s="709",
+    range_in_s="limited", range_s="full", dither_type="error_diffusion")
+
+pad_w = math.ceil(clip.width / 32) * 32 - clip.width
+pad_h = math.ceil(clip.height / 32) * 32 - clip.height
+if pad_w or pad_h:
+    clip = core.std.AddBorders(clip, left=pad_w//2, right=pad_w-pad_w//2,
+        top=pad_h//2, bottom=pad_h-pad_h//2)
+
+backend = Backend.NCNN_VK(fp16=True, num_streams=1, device_id=0)
+clip = RIFE(clip, model=$modelPy, backend=backend, multi=2,
+            scale=$Scale, video_player=True)
+
+clip = core.resize.Bicubic(clip, format=vs.YUV420P8, matrix_s="709")
+clip.set_output()
+"@
+    Set-Content $tmpVpy $vpy -Encoding UTF8
+
+    try {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        # NUL en Windows descarta la salida sin tocar disco
+        & $vspipe --y4m $tmpVpy NUL 2>&1 | Out-Null
+        $sw.Stop()
+    } catch {
+        Remove-Item $tmpVpy -EA SilentlyContinue
+        return $null
+    }
+    Remove-Item $tmpVpy -EA SilentlyContinue
+
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $framesOut = $FramesIn * 2
+    if ($sw.Elapsed.TotalSeconds -le 0) { return $null }
+    return [math]::Round($framesOut / $sw.Elapsed.TotalSeconds, 1)
+}
+
 function Patch-Vsmlrt {
     param([string]$Path)
     $c = Get-Content $Path -Raw -Encoding UTF8
@@ -1017,10 +1101,11 @@ function Write-InterpolationVpy {
         Info "Backup -> $bak"
     }
 
-    # Cuerpo del backend segun tipo
-    # NCNN_VK no soporta el modelo "heavy", usar v4_25 normal
-    # NCNN_VK acepta tambien fp16; num_streams=1 conservador para GPUs viejas/iGPU
-    $modelLine   = if ($BackendType -eq "NCNN_VK") { "RIFEModel.v4_25" } else { "RIFEModel.v4_25_heavy" }
+    # Modelo y escala vienen de Config (configurables por usuario o benchmark)
+    $modelKey  = $Global:Config.RifeModel
+    if (-not $modelKey) { $modelKey = if ($BackendType -eq "NCNN_VK") { "v4.22" } else { "v4.25_heavy" } }
+    $scaleVal  = if ($Global:Config.RifeScale) { [double]$Global:Config.RifeScale } else { 1.0 }
+    $modelLine = "RIFEModel." + ($modelKey -replace '\.', '_')   # "v4.22" -> "v4_22"
     $streamsLine = if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }
     $backendExpr = switch ($BackendType) {
         "TRT_RTX" { "Backend.TRT_RTX(fp16=True, num_streams=NUM_STREAMS, device_id=0)" }
@@ -1041,7 +1126,7 @@ from vsmlrt import RIFE, RIFEModel, Backend
 core = vs.core
 
 RIFE_MODEL  = $modelLine
-RIFE_SCALE  = 1.0   # 0.5 si hay drops en 4K
+RIFE_SCALE  = $scaleVal   # 0.5 = procesa a la mitad (4x mas rapido)
 NUM_STREAMS = $streamsLine
 
 clip = video_in
@@ -1263,6 +1348,111 @@ function Execute-Full-Install-Steps {
     Set-EnvVar
 }
 
+function Set-RifeProfile {
+    param([string]$Profile)
+    # Aplica un preset en $Global:Config y lo persiste.
+    switch ($Profile) {
+        "maxima"      { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25_heavy" }
+        "calidad"     { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.25" }
+        "balanceado"  { $Global:Config.RifeScale = 1.0; $Global:Config.RifeModel = "v4.22" }
+        "rendimiento" { $Global:Config.RifeScale = 0.5; $Global:Config.RifeModel = "v4.22" }
+    }
+    Save-Config | Out-Null
+    Info "Perfil: $Profile (modelo=$($Global:Config.RifeModel), scale=$($Global:Config.RifeScale))"
+}
+
+function Action-BenchmarkRife {
+    # Mide rendimiento de varios perfiles y elige el de mayor calidad que
+    # supere el refresh rate del monitor con margen de seguridad (1.2x).
+    Section "Test de rendimiento RIFE-NCNN"
+    $hz = Get-MonitorRefreshRate
+    $target = [math]::Round($hz * 1.2, 1)   # 20% de margen
+    Info "Monitor detectado: $hz Hz   |   Objetivo: $target fps efectivos"
+    Write-Host ""
+    Info "Esto tarda ~1-3 minutos y carga la GPU al maximo. No abras otros videos mientras corre."
+    Write-Host ""
+
+    # Perfiles de mas pesado a mas ligero. Salimos en cuanto uno cumple.
+    $profiles = @(
+        @{ Name = "maxima";      Scale = 1.0; Model = "v4.25_heavy" },
+        @{ Name = "calidad";     Scale = 1.0; Model = "v4.25"        },
+        @{ Name = "balanceado";  Scale = 1.0; Model = "v4.22"        },
+        @{ Name = "rendimiento"; Scale = 0.5; Model = "v4.22"        }
+    )
+
+    $best   = $null
+    $results = @()
+    foreach ($p in $profiles) {
+        Info "Probando $($p.Name)  (modelo=$($p.Model), scale=$($p.Scale))..."
+        $fps = Run-NcnnBenchmark -Scale $p.Scale -Model $p.Model -FramesIn 30
+        if ($null -eq $fps) {
+            Warn "  Fallo el test de este perfil"
+            continue
+        }
+        $results += [PSCustomObject]@{ Profile = $p.Name; Fps = $fps }
+        $marker = if ($fps -ge $target) { "OK" } else { "lento" }
+        Info "  -> $fps fps efectivos  [$marker]"
+        if ($fps -ge $target -and -not $best) {
+            $best = $p.Name   # primer perfil que cumple (el mas pesado posible)
+            # Seguimos midiendo el resto para mostrar tabla completa, pero ya tenemos ganador
+        }
+    }
+
+    Write-Host ""
+    Info "Resumen:"
+    foreach ($r in $results) {
+        $mark = if ($r.Profile -eq $best) { "  <- ELEGIDO" } else { "" }
+        Write-Host ("    {0,-12}  {1,6} fps{2}" -f $r.Profile, $r.Fps, $mark) -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    if (-not $best) {
+        Warn "Ningun perfil alcanza $target fps. Tu GPU es muy lenta para RIFE-Vulkan."
+        Hint "Recomendacion: usar el perfil 'rendimiento' y aceptar drops ocasionales,"
+        Hint "             o cambiar a MVTools en la opcion Configuracion."
+        $r = Read-Host "Aplicar perfil 'rendimiento' de todas formas? (s/n)"
+        if ($r -eq "s" -or $r -eq "S") { Set-RifeProfile -Profile "rendimiento" }
+        return
+    }
+
+    Ok "Perfil elegido: $best"
+    Set-RifeProfile -Profile $best
+
+    # Regenerar el .vpy si ya existe, para que tome efecto inmediato
+    $vpy = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
+    if (Test-Path $vpy) {
+        $bt = switch ($Global:Env.SupportedBackend) {
+            "RIFE_TRT_RTX" { "TRT_RTX" }
+            "RIFE_NCNN"    { "NCNN_VK" }
+            default        { "TRT" }
+        }
+        Write-InterpolationVpy -BackendType $bt -Force
+    }
+}
+
+function Ask-RifeProfile {
+    # Para flujos de instalacion: pregunta al usuario el perfil deseado.
+    Write-Host ""
+    Info "Elige perfil de RIFE:"
+    Write-Host "  [1] Maxima calidad  (modelo heavy, scale 1.0)  - solo GPUs potentes"
+    Write-Host "  [2] Calidad         (modelo v4.25, scale 1.0)"
+    Write-Host "  [3] Balanceado      (modelo v4.22, scale 1.0)  - recomendado para GPUs medias"
+    Write-Host "  [4] Rendimiento     (modelo v4.22, scale 0.5)  - GPUs viejas o si hay drops"
+    Write-Host "  [5] Test automatico (recomendado)              - prueba todos y elige el mejor"
+    Write-Host ""
+    while ($true) {
+        $r = Read-Host "Opcion (1-5)"
+        switch ($r) {
+            "1" { Set-RifeProfile -Profile "maxima";       return $true }
+            "2" { Set-RifeProfile -Profile "calidad";      return $true }
+            "3" { Set-RifeProfile -Profile "balanceado";   return $true }
+            "4" { Set-RifeProfile -Profile "rendimiento";  return $true }
+            "5" { Action-BenchmarkRife; return $true }
+            default { Warn "Opcion invalida" }
+        }
+    }
+}
+
 function Action-Install {
     Clear-Host
     Title "INSTALACION"
@@ -1302,7 +1492,17 @@ function Action-Install {
     }
 
     if (-not (Test-Path $Global:Config.MpvConfigDir)) { New-Item -ItemType Directory -Path $Global:Config.MpvConfigDir | Out-Null }
-    
+
+    # Para NCNN preguntar perfil; para TRT/TRT_RTX usar defaults de calidad maxima
+    if ($backendType -eq "NCNN_VK") {
+        Section "Perfil de calidad / rendimiento"
+        Info "RIFE-NCNN-Vulkan se puede configurar entre maxima calidad y maximo rendimiento."
+        Info "Si no estas seguro, elige '5 - Test automatico' (recomendado)."
+        Ask-RifeProfile | Out-Null
+    } else {
+        Set-RifeProfile -Profile "maxima"
+    }
+
     Execute-Full-Install-Steps -BackendType $backendType
 
     Section "INSTALACION COMPLETA"
@@ -1394,6 +1594,7 @@ function Action-Update {
         $luaLabel,
         "Re-aplicar parches a vsmlrt.py",
         "Re-descargar/actualizar modelos RIFE",
+        "Cambiar perfil RIFE (calidad/rendimiento/test automatico)",
         "Reset completo (borra todo lo de mpv-interp y reinstala)",
         "Volver al menu"
     )
@@ -1482,6 +1683,27 @@ clip.set_output()
             Pause-Continue
         }
         7 {
+            # Cambiar perfil RIFE
+            if ($Global:Env.SupportedBackend -eq "MVTOOLS") {
+                Warn "Tu backend es MVTools, no RIFE. Este menu no aplica."
+            } else {
+                Info "Perfil actual: modelo=$($Global:Config.RifeModel), scale=$($Global:Config.RifeScale)"
+                Write-Host ""
+                Ask-RifeProfile | Out-Null
+                # Regenerar el .vpy con el perfil nuevo
+                $vpy = Join-Path $Global:Config.MpvConfigDir "interpolation.vpy"
+                if (Test-Path $vpy) {
+                    $bt = switch ($Global:Env.SupportedBackend) {
+                        "RIFE_TRT_RTX" { "TRT_RTX" }
+                        "RIFE_NCNN"    { "NCNN_VK" }
+                        default        { "TRT" }
+                    }
+                    Write-InterpolationVpy -BackendType $bt -Force
+                }
+            }
+            Pause-Continue
+        }
+        8 {
             $confirm = Read-Host "Esto borrara $($Global:Config.BaseDir). Confirmas? (escribe BORRAR)"
             if ($confirm -eq "BORRAR") {
                 Remove-Item $Global:Config.BaseDir -Recurse -Force -EA SilentlyContinue
