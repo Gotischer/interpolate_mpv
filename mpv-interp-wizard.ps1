@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 4      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 5      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
@@ -1226,10 +1226,10 @@ clip = video_in
 
 target_fps = display_fps if display_fps and display_fps > 0 else 60.0
 src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
-# int() = floor: para monitor 60Hz + fuente 24fps da multi=2 (48fps target)
-# en vez de multi=3 (72fps target) que desperdicia 12 frames/seg en pulldown.
-# Para 120Hz/144Hz/240Hz da el multiplicador correcto exacto.
-multi      = max(2, int(target_fps / src_fps))
+# ceil() = siempre alcanzar o superar la frecuencia del monitor.
+# mpv descarta frames extra via vsync, eliminando judder.
+# 60Hz/24fps -> ceil(2.5)=3 -> 72fps -> vsync a 60  |  75Hz/24fps -> ceil(3.1)=4 -> 96fps -> vsync a 75
+multi      = max(2, math.ceil(target_fps / src_fps))
 
 clip = core.resize.Bicubic(clip, format=vs.RGBH, matrix_in_s="709",
     range_in_s="limited", range_s="full", dither_type="error_diffusion")
@@ -1654,12 +1654,13 @@ function Action-Install-MVTools {
     $vpyContent = @"
 # vpy-template-version: $($Global:VpyTemplateVersion)
 # interpolation.vpy - MVTools (CPU)
+import math
 import vapoursynth as vs
 core = vs.core
 clip = video_in
 target_fps = display_fps if display_fps and display_fps > 0 else 60.0
 src_fps    = container_fps if container_fps and container_fps > 0 else 24.0
-factor     = max(2, round(target_fps / src_fps))
+factor     = max(2, math.ceil(target_fps / src_fps))
 
 clip = core.resize.Bicubic(clip, format=vs.YUV420P8, matrix_s="709")
 sup  = core.mv.Super(clip, pel=2)
