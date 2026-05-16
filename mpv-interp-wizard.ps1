@@ -774,7 +774,7 @@ function Find-Or-Download {
         Info "Descargando con aria2 (multi-conexion)..."
         $dir = Split-Path $dst -Parent
         $name = Split-Path $dst -Leaf
-        & $aria -x 16 -s 16 -k 1M --allow-overwrite=true --auto-file-renaming=false --console-log-level=warn -d $dir -o $name $Url
+        & $aria -x 16 -s 16 -k 1M --allow-overwrite=true --auto-file-renaming=false --console-log-level=warn -d $dir -o $name $Url | Out-Host
         if ($LASTEXITCODE -eq 0 -and (Test-Path $dst)) { return $dst }
         Warn "Aria2 fallo, reintentando con metodo estandar..."
     }
@@ -1721,17 +1721,30 @@ function Action-Install {
 
     if (-not (Test-Path $Global:Config.MpvConfigDir)) { New-Item -ItemType Directory -Path $Global:Config.MpvConfigDir | Out-Null }
 
+    # Instalamos binarios primero para que el Benchmark funcione si se elige Test automatico
+    $script:vsPath = Install-VapourSynth
+    $script:vsRoot = Split-Path $script:vsPath -Parent
+    Install-VsMlrt -VsRoot $script:vsRoot
+    Setup-VsmlrtPy -VsRoot $script:vsRoot
+    Install-RifeModels -VsRoot $script:vsRoot
+
     # Para NCNN preguntar perfil; para TRT/TRT_RTX usar defaults de calidad maxima
     if ($backendType -eq "NCNN_VK") {
         Section "Perfil de calidad / rendimiento"
         Info "RIFE-NCNN-Vulkan se puede configurar entre maxima calidad y maximo rendimiento."
-        Info "Si no estas seguro, elige '5 - Test automatico' (recomendado)."
+        Info "Si no estas seguro, elige '6 - Test automatico' (recomendado)."
         Ask-RifeProfile | Out-Null
     } else {
         Set-RifeProfile -Profile "maxima"
     }
 
-    Execute-Full-Install-Steps -BackendType $backendType
+    Write-InterpolationVpy -BackendType $backendType
+    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
+    if ($backendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    else                               { Write-AutoModeLua -Buffered 8 -Concurrent 4 }
+    Write-SetDisplayHz
+    Set-EnvVar
 
     Section "INSTALACION COMPLETA"
     Write-Host ""
