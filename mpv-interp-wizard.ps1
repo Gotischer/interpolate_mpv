@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 8      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 9      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -937,6 +937,10 @@ function Patch-Vsmlrt {
         @{
             Old = '        env = {"CUDA_MODULE_LOADING": "LAZY"}'
             New = "        _cuda_dir = $cudaExpr`n        env = {**os.environ, `"CUDA_MODULE_LOADING`": `"LAZY`", `"PATH`": _cuda_dir + `";`" + os.environ.get(`"PATH`", `"`"`)}"
+        },
+        @{
+            Old = '            fp16=backend.fp16,'
+            New = '            fp16=backend.fp16, flexible_output=True,'
         }
     )
 
@@ -1250,8 +1254,6 @@ function Write-InterpolationVpy {
     # fp16: Config tiene prioridad, default True
     $fpStr = if ($null -ne $Global:Config.RifeFp16 -and $Global:Config.RifeFp16 -eq $false) { "False" } else { "True" }
 
-    $rifeKwargs = if ($BackendType -eq "NCNN_VK") { ", flexible_output=True" } else { "" }
-
     $backendExpr = switch ($BackendType) {
         "TRT_RTX" { "Backend.TRT_RTX(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
         "NCNN_VK" { "Backend.NCNN_VK(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
@@ -1317,7 +1319,7 @@ backend = $backendExpr
 
 # scale=1.0 obligatorio para RIFE v4.7+; el "downscale antes" reemplaza scale=0.5
 clip = RIFE(clip, model=RIFE_MODEL, backend=backend, multi=multi,
-            scale=1.0, video_player=True$rifeKwargs)
+            scale=1.0, video_player=True)
 
 if pad_w or pad_h:
     clip = core.std.Crop(clip, left=left, right=right, top=top, bottom=bottom)
@@ -1902,7 +1904,7 @@ clip = core.resize.Bicubic(clip, format=vs.YUV420P8, matrix_s="709")
 sup  = core.mv.Super(clip, pel=2)
 vec_b = core.mv.Analyse(sup, blksize=16, isb=True)
 vec_f = core.mv.Analyse(sup, blksize=16, isb=False)
-clip = core.mv.BlockFPS(clip, sup, vec_b, vec_f, num=int(src_fps*factor*100), den=100, mode=3)
+clip = core.mv.BlockFPS(clip, sup, vec_b, vec_f, num=int(src_fps*factor*1000), den=1000, mode=3)
 clip.set_output()
 "@
                 Set-Content $vpyDst $vpyContent -Encoding UTF8
