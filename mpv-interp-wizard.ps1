@@ -28,8 +28,8 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
-$Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 11      # subir cuando cambies el template del .vpy
+$Global:WizardVersion       = "1.0.8"
+$Global:VpyTemplateVersion  = 12      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -1268,7 +1268,13 @@ function Write-InterpolationVpy {
     $backendExpr = switch ($BackendType) {
         "TRT_RTX" { "Backend.TRT_RTX(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
         "NCNN_VK" { "Backend.NCNN_VK(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
-        default   { "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
+        default   { 
+            if ($Global:Env.GPUGen -eq "Pascal") {
+                "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0, workspace=2000)"
+            } else {
+                "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)"
+            }
+        }
     }
 
     $content = @"
@@ -1577,8 +1583,8 @@ function Execute-Full-Install-Steps {
     # - TRT con 1 stream (perfil ultra/rendimiento): 4/2 (frames seriados)
     # - TRT con 2 streams (perfiles normales): 8/4 (mas throughput)
     $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
-    if ($BackendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
-    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
+    if ($BackendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
+    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
     else                               { Write-AutoModeLua -Buffered 8 -Concurrent 4 }
     Write-SetDisplayHz
     Set-EnvVar
@@ -2138,7 +2144,7 @@ function Action-Repair {
         if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -BackendType $backendType -Force }
         # Buffers segun backend y num_streams (alineado con Execute-Full-Install-Steps)
         $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
-        if ($backendType -eq "NCNN_VK" -or $streams -le 1) { $buf = 4; $cnc = 2 }
+        if ($backendType -eq "NCNN_VK" -or $streams -le 1) { $buf = 4; $cnc = 1 }
         else                                                { $buf = 8; $cnc = 4 }
         if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered $buf -Concurrent $cnc }
         else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
