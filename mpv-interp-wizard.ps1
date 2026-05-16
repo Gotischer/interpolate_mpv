@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 10      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 11      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -918,14 +918,14 @@ function Patch-Vsmlrt {
             New = '        try:
             trt_version = parse_trt_version(int(core.trt.Version()["tensorrt_version"]))
         except AttributeError:
-            trt_version = (10, 16, 0)'
+            trt_version = (8, 6, 1)'
         },
         @{
             Old = '    trt_version = parse_trt_version(int(core.trt_rtx.Version()["tensorrt_version"]))'
             New = '    try:
         trt_version = parse_trt_version(int(core.trt_rtx.Version()["tensorrt_version"]))
     except AttributeError:
-        trt_version = (10, 16, 0)'
+        trt_version = (8, 6, 1)'
         },
         @{
             Old = '            env = {env_key: prev_env_value, "CUDA_MODULE_LOADING": "LAZY"}'
@@ -1253,7 +1253,10 @@ function Write-InterpolationVpy {
     $dsTarget = if ($scaleCfg -le 0.6) { 1280 } else { 1920 }
 
     # Streams: Config tiene prioridad, sino default por backend
-    $streamsLine = if ($Global:Config.RifeStreams) { "$($Global:Config.RifeStreams)" } else { (if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }) }
+    # Streams: Config tiene prioridad. Default 2, EXCEPTO en Pascal o NCNN donde 1 es mas estable.
+    $streamsLine = if ($Global:Config.RifeStreams) { "$($Global:Config.RifeStreams)" } else { 
+        if ($BackendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal") { "1" } else { "2" } 
+    }
 
     # fp16: Config tiene prioridad. Default True, EXCEPTO en Pascal (Serie 10) que falla/es lento en fp16.
     $fpStr = if ($null -ne $Global:Config.RifeFp16) { 
