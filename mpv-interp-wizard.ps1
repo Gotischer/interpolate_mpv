@@ -928,15 +928,18 @@ function Patch-Vsmlrt {
         },
         @{
             Old = '            env = {env_key: prev_env_value, "CUDA_MODULE_LOADING": "LAZY"}'
-            New = "            _cuda_dir = $cudaExpr`n            env = {**os.environ, env_key: prev_env_value, `"CUDA_MODULE_LOADING`": `"LAZY`", `"PATH`": _cuda_dir + `";`" + os.environ.get(`"PATH`", `"`"`)}"
+            New = '            _cuda_dir = {0}
+            env = {{**os.environ, env_key: prev_env_value, "CUDA_MODULE_LOADING": "LAZY", "PATH": _cuda_dir + ";" + os.environ.get("PATH", "")}}' -f $cudaExpr
         },
         @{
             Old = '            env = {env_key: log_filename, "CUDA_MODULE_LOADING": "LAZY"}'
-            New = "            _cuda_dir = $cudaExpr`n            env = {**os.environ, env_key: log_filename, `"CUDA_MODULE_LOADING`": `"LAZY`", `"PATH`": _cuda_dir + `";`" + os.environ.get(`"PATH`", `"`"`)}"
+            New = '            _cuda_dir = {0}
+            env = {{**os.environ, env_key: log_filename, "CUDA_MODULE_LOADING": "LAZY", "PATH": _cuda_dir + ";" + os.environ.get("PATH", "")}}' -f $cudaExpr
         },
         @{
             Old = '        env = {"CUDA_MODULE_LOADING": "LAZY"}'
-            New = "        _cuda_dir = $cudaExpr`n        env = {**os.environ, `"CUDA_MODULE_LOADING`": `"LAZY`", `"PATH`": _cuda_dir + `";`" + os.environ.get(`"PATH`", `"`"`)}"
+            New = '        _cuda_dir = {0}
+        env = {{**os.environ, "CUDA_MODULE_LOADING": "LAZY", "PATH": _cuda_dir + ";" + os.environ.get("PATH", "")}}' -f $cudaExpr
         },
         @{
             Old = '            fp16=backend.fp16, flexible_output=True,'
