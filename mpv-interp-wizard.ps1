@@ -28,9 +28,9 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
-$Global:WizardVersion       = "1.0.8"
-$Global:VpyTemplateVersion  = 12      # subir cuando cambies el template del .vpy
-$Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
+$Global:WizardVersion       = "1.0.9"
+$Global:VpyTemplateVersion  = 13      # subir cuando cambies el template del .vpy
+$Global:LuaTemplateVersion  = 4      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
 $Global:VsMlrtRepo          = "AmusementClub/vs-mlrt"
@@ -1579,13 +1579,16 @@ function Execute-Full-Install-Steps {
     Install-RifeModels -VsRoot $script:vsRoot
     Write-InterpolationVpy -BackendType $BackendType
     # buffered/concurrent dependen del backend y de num_streams:
-    # - NCNN: 4/2 (vulkan rinde menos)
-    # - TRT con 1 stream (perfil ultra/rendimiento): 4/2 (frames seriados)
-    # - TRT con 2 streams (perfiles normales): 8/4 (mas throughput)
-    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
-    if ($BackendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
-    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 1 }
-    else                               { Write-AutoModeLua -Buffered 8 -Concurrent 4 }
+    # - Pascal / NCNN: 4/1 (máxima estabilidad en VRAM limitada)
+    # - TRT con 2+ streams: 8/4 (mejor throughput)
+    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 
+        if ($BackendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal") { 1 } else { 2 }
+    }
+    if ($BackendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal" -or $streams -le 1) { 
+        Write-AutoModeLua -Buffered 4 -Concurrent 1 
+    } else { 
+        Write-AutoModeLua -Buffered 8 -Concurrent 4 
+    }
     Write-SetDisplayHz
     Set-EnvVar
 }
@@ -1760,10 +1763,14 @@ function Action-Install {
     }
 
     Write-InterpolationVpy -BackendType $backendType
-    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
-    if ($backendType -eq "NCNN_VK")    { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
-    elseif ($streams -le 1)            { Write-AutoModeLua -Buffered 4 -Concurrent 2 }
-    else                               { Write-AutoModeLua -Buffered 8 -Concurrent 4 }
+    $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 
+        if ($backendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal") { 1 } else { 2 }
+    }
+    if ($backendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal" -or $streams -le 1) { 
+        Write-AutoModeLua -Buffered 4 -Concurrent 1 
+    } else { 
+        Write-AutoModeLua -Buffered 8 -Concurrent 4 
+    }
     Write-SetDisplayHz
     Set-EnvVar
 
@@ -2143,9 +2150,11 @@ function Action-Repair {
         if (-not $st.ModelsInstalled) { Install-RifeModels -VsRoot $st.VSPath }
         if (-not $st.VpyInstalled -or $st.VpyOutdated) { Write-InterpolationVpy -BackendType $backendType -Force }
         # Buffers segun backend y num_streams (alineado con Execute-Full-Install-Steps)
-        $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 2 }
-        if ($backendType -eq "NCNN_VK" -or $streams -le 1) { $buf = 4; $cnc = 1 }
-        else                                                { $buf = 8; $cnc = 4 }
+        $streams = if ($Global:Config.RifeStreams) { [int]$Global:Config.RifeStreams } else { 
+            if ($backendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal") { 1 } else { 2 }
+        }
+        if ($backendType -eq "NCNN_VK" -or $Global:Env.GPUGen -eq "Pascal" -or $streams -le 1) { $buf = 4; $cnc = 1 }
+        else                                                                                  { $buf = 8; $cnc = 4 }
         if (-not $st.LuaInstalled -or $st.LuaOutdated) { Write-AutoModeLua -Force -Buffered $buf -Concurrent $cnc }
         else { Info "auto_mode.lua ya esta al dia (v$($st.LuaVersion))" }
     } else {
