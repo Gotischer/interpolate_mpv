@@ -29,7 +29,7 @@ $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
 $Global:WizardVersion       = "1.0.7"
-$Global:VpyTemplateVersion  = 9      # subir cuando cambies el template del .vpy
+$Global:VpyTemplateVersion  = 10      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 3      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -463,8 +463,8 @@ function Detect-GPU {
             } elseif ($name -match "gtx\s*10[0-9]{2}|titan\s*xp|titan\s*x") {
                 $Global:Env.GPUGen           = "Pascal"
                 $Global:Env.ComputeCap       = "6.1"
-                # Pascal soporta Vulkan -> RIFE via NCNN (TRT necesita compute >= 7.5)
-                $Global:Env.SupportedBackend = "RIFE_NCNN"
+                # Pascal supports TensorRT (Compute 6.1 minimum for vstrt 8.6+)
+                $Global:Env.SupportedBackend = "RIFE_TRT"
             } else {
                 $Global:Env.GPUGen           = "NVIDIA antigua"
                 # Maxwell/Kepler tambien soportan Vulkan en general
@@ -939,8 +939,8 @@ function Patch-Vsmlrt {
             New = "        _cuda_dir = $cudaExpr`n        env = {**os.environ, `"CUDA_MODULE_LOADING`": `"LAZY`", `"PATH`": _cuda_dir + `";`" + os.environ.get(`"PATH`", `"`"`)}"
         },
         @{
-            Old = '            fp16=backend.fp16,'
-            New = '            fp16=backend.fp16, flexible_output=True,'
+            Old = '            fp16=backend.fp16, flexible_output=True,'
+            New = '            fp16=backend.fp16,'
         }
     )
 
