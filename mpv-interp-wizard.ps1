@@ -1250,6 +1250,8 @@ function Write-InterpolationVpy {
     # fp16: Config tiene prioridad, default True
     $fpStr = if ($null -ne $Global:Config.RifeFp16 -and $Global:Config.RifeFp16 -eq $false) { "False" } else { "True" }
 
+    $rifeKwargs = if ($BackendType -eq "NCNN_VK") { ", flexible_output=True" } else { "" }
+
     $backendExpr = switch ($BackendType) {
         "TRT_RTX" { "Backend.TRT_RTX(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
         "NCNN_VK" { "Backend.NCNN_VK(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
@@ -1315,7 +1317,7 @@ backend = $backendExpr
 
 # scale=1.0 obligatorio para RIFE v4.7+; el "downscale antes" reemplaza scale=0.5
 clip = RIFE(clip, model=RIFE_MODEL, backend=backend, multi=multi,
-            scale=1.0, video_player=True)
+            scale=1.0, video_player=True$rifeKwargs)
 
 if pad_w or pad_h:
     clip = core.std.Crop(clip, left=left, right=right, top=top, bottom=bottom)
