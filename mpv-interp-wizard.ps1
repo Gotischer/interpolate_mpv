@@ -28,8 +28,8 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference    = "Continue"
 
 # Versionado del wizard y de los templates generados
-$Global:WizardVersion       = "1.0.9"
-$Global:VpyTemplateVersion  = 13      # subir cuando cambies el template del .vpy
+$Global:WizardVersion       = "1.1.0"
+$Global:VpyTemplateVersion  = 14      # subir cuando cambies el template del .vpy
 $Global:LuaTemplateVersion  = 4      # subir cuando cambies el template del auto_mode.lua
 $Global:SetHzTemplateVersion = 2     # subir cuando cambies el template del set_display_hz.ps1
 $Global:WizardRepo          = "Gotischer/interpolate_mpv"
@@ -1243,7 +1243,11 @@ function Write-InterpolationVpy {
     # (vsmlrt v15+ requiere scale=1.0 para modelos v4.7+); en su lugar
     # convertimos RifeScale en un threshold de downscale-antes-de-RIFE.
     $modelKey  = $Global:Config.RifeModel
-    if (-not $modelKey) { $modelKey = if ($BackendType -eq "NCNN_VK") { "v4.22" } else { "v4.25_heavy" } }
+    if (-not $modelKey) { 
+        if ($Global:Env.GPUGen -eq "Pascal") { $modelKey = "v4.25" }
+        elseif ($BackendType -eq "NCNN_VK")  { $modelKey = "v4.22" }
+        else { $modelKey = "v4.25_heavy" } 
+    }
     $modelLine = "RIFEModel." + ($modelKey -replace '\.', '_')   # "v4.22" -> "v4_22"
 
     # Threshold de downscale (en pixeles de ancho):
@@ -1270,7 +1274,7 @@ function Write-InterpolationVpy {
         "NCNN_VK" { "Backend.NCNN_VK(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
         default   { 
             if ($Global:Env.GPUGen -eq "Pascal") {
-                "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0, workspace=2000)"
+                "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0, workspace=1000)"
             } else {
                 "Backend.TRT(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)"
             }
