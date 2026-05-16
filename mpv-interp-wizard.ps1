@@ -905,10 +905,11 @@ clip.set_output()
 }
 
 function Patch-Vsmlrt {
-    param([string]$Path)
-    $c = Get-Content $Path -Raw -Encoding UTF8
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return }
+    $c = Get-Content $FilePath -Raw -Encoding UTF8
     $orig = $c
-    $patches = 0
+    
     $cudaExpr = 'str(__import__("pathlib").Path(__file__).parent / "vsmlrt-cuda")'
 
     $repl = @(
@@ -961,7 +962,7 @@ function Patch-Vsmlrt {
     }
 
     if ($c -ne $orig) {
-        Set-Content $Path $c -NoNewline -Encoding UTF8
+        Set-Content $FilePath $c -NoNewline -Encoding UTF8
     }
     return $patches
 }
@@ -1254,8 +1255,12 @@ function Write-InterpolationVpy {
     # Streams: Config tiene prioridad, sino default por backend
     $streamsLine = if ($Global:Config.RifeStreams) { "$($Global:Config.RifeStreams)" } else { (if ($BackendType -eq "NCNN_VK") { "1" } else { "2" }) }
 
-    # fp16: Config tiene prioridad, default True
-    $fpStr = if ($null -ne $Global:Config.RifeFp16 -and $Global:Config.RifeFp16 -eq $false) { "False" } else { "True" }
+    # fp16: Config tiene prioridad. Default True, EXCEPTO en Pascal (Serie 10) que falla/es lento en fp16.
+    $fpStr = if ($null -ne $Global:Config.RifeFp16) { 
+        if ($Global:Config.RifeFp16) { "True" } else { "False" }
+    } else {
+        if ($Global:Env.GPUGen -eq "Pascal") { "False" } else { "True" }
+    }
 
     $backendExpr = switch ($BackendType) {
         "TRT_RTX" { "Backend.TRT_RTX(fp16=$fpStr, num_streams=NUM_STREAMS, device_id=0)" }
