@@ -905,9 +905,9 @@ clip.set_output()
 }
 
 function Patch-Vsmlrt {
-    param([string]$FilePath)
-    if (-not (Test-Path $FilePath)) { return }
-    $c = Get-Content $FilePath -Raw -Encoding UTF8
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    $c = Get-Content $Path -Raw -Encoding UTF8
     $orig = $c
     
     $cudaExpr = 'str(__import__("pathlib").Path(__file__).parent / "vsmlrt-cuda")'
@@ -962,7 +962,7 @@ function Patch-Vsmlrt {
     }
 
     if ($c -ne $orig) {
-        Set-Content $FilePath $c -NoNewline -Encoding UTF8
+        Set-Content $Path $c -NoNewline -Encoding UTF8
     }
     return $patches
 }
